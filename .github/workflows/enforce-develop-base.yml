@@ -1,0 +1,36 @@
+name: Enforce develop as PR base
+
+# Contributors must open pull requests against `develop`, never `main`.
+# Any PR into `main` from someone who is not an owner, org member or
+# collaborator is commented on and closed automatically.
+#
+# Uses pull_request_target so it can comment/close on PRs from forks.
+# It never checks out or runs the PR's code.
+
+on:
+  pull_request_target:
+    types: [opened, reopened, edited, synchronize]
+    branches: [main]
+
+permissions:
+  pull-requests: write
+  issues: write
+
+jobs:
+  redirect-to-develop:
+    if: >-
+      github.event.pull_request.author_association != 'OWNER' &&
+      github.event.pull_request.author_association != 'MEMBER' &&
+      github.event.pull_request.author_association != 'COLLABORATOR'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Comment and close PR targeting main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh pr comment "$PR" --repo "$REPO" --body "👋 Thanks for the contribution! This repository only accepts contributor pull requests into the **\`develop\`** branch. PRs raised against \`main\` cannot be merged, so this one has been closed automatically.
+
+          Please re-open your PR with **base: \`develop\`** (rebase your branch onto \`develop\` first if needed). See the note at the bottom of the issue you're working on."
+          gh pr close "$PR" --repo "$REPO"
