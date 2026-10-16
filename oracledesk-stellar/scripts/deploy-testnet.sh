@@ -18,12 +18,16 @@ AGENT_KEY=oracledesk-agent
 OUT=deployments/testnet.json
 WASM_DIR=target/wasm32v1-none/release
 
-# treasury's risk caps (7-decimal USDC units). Must comfortably clear
-# market-core's MIN_SEED (100 USDC) since agent_create_market's seed amount
-# is capped by max_trade. Override via env if you need different limits.
-MAX_TRADE=${MAX_TRADE:-2000000000}   # 200 USDC
-MAX_MARKET=${MAX_MARKET:-5000000000} # 500 USDC
-MAX_DAILY=${MAX_DAILY:-10000000000}  # 1,000 USDC
+# treasury's risk caps, in raw collateral units. The default collateral
+# below is a self-issued 7-decimal test USDC, so these defaults are sized
+# for that. They must comfortably clear market-core's derived MIN_SEED
+# (100 * 10^decimals) since agent_create_market's seed amount is capped by
+# max_trade. If you swap in a token with different decimals, override these
+# via env to match its units.
+COLLATERAL_DECIMALS=${COLLATERAL_DECIMALS:-7}
+MAX_TRADE=${MAX_TRADE:-2000000000}   # 200 USDC at 7 decimals
+MAX_MARKET=${MAX_MARKET:-5000000000} # 500 USDC at 7 decimals
+MAX_DAILY=${MAX_DAILY:-10000000000}  # 1,000 USDC at 7 decimals
 DEFAULT_FEE_BPS=${DEFAULT_FEE_BPS:-100} # 1%
 
 log() { echo "==> $*" >&2; }
@@ -81,8 +85,11 @@ AGENT=$(stellar keys address "$AGENT_KEY")
 json_set --arg d "$DEPLOYER" --arg a "$AGENT" '.deployer = $d | .agent = $a'
 
 # --- USDC test asset ---------------------------------------------------------
-# Self-issued testnet "USDC": a real SEP-41 token (7 decimals, matching the
-# design doc) with no dependency on guessing a real issuer's contract id.
+# Self-issued testnet "USDC": a real SEP-41 token with no dependency on
+# guessing a real issuer's contract id. Classic assets report 7 decimals,
+# which matches COLLATERAL_DECIMALS above. market-core reads decimals() at
+# construction and derives its seed/size bounds from it, so the asset must
+# be deployed before market-core (it is, below).
 # <!-- TODO(maintainer): point `collateral` at Circle's real testnet USDC
 # issuer if/when this needs to interoperate with other testnet apps. -->
 USDC=$(json_get .contracts.usdc)
@@ -92,6 +99,11 @@ if [ -z "$USDC" ]; then
     --asset "USDC:$DEPLOYER" \
     --source-account "$DEPLOYER_KEY" \
     --network "$NETWORK")
+  # Classic assets are always 7 decimals; sanity-check the assumption that
+  # the treasury cap defaults above were sized against.
+  if [ "$COLLATERAL_DECIMALS" != "7" ]; then
+    log "warning: COLLATERAL_DECIMALS=$COLLATERAL_DECIMALS but Classic assets report 7"
+  fi
   json_set --arg id "$USDC" '.contracts.usdc = $id'
 else
   log "USDC already deployed: $USDC"
@@ -100,6 +112,8 @@ fi
 # --- market-core (placeholder resolver/treasury, wired up after) -----------
 MARKET_CORE=$(json_get .contracts.market_core)
 if [ -z "$MARKET_CORE" ]; then
+  # market-core's __constructor calls collateral.decimals() and reverts if
+  # the token is not deployed yet, so USDC must exist before this step.
   log "deploying market-core"
   MARKET_CORE=$(stellar contract deploy \
     --wasm "$WASM_DIR/market_core.wasm" \
@@ -112,6 +126,15 @@ if [ -z "$MARKET_CORE" ]; then
     --resolver "$DEPLOYER" \
     --default_fee_bps "$DEFAULT_FEE_BPS")
   json_set --arg id "$MARKET_CORE" '.contracts.market_core = $id'
+  # Record the collateral decimals market-core was constructed against, so
+  # downstream tooling (treasury caps, agent seeding) can size amounts in
+  # the right units without re-querying the token.
+  MARKET_CORE_DECIMALS=$(stellar contract invoke --id "$MARKET_CORE" \
+    --source-account "$DEPLOYER_KEY" --network "$NETWORK" \
+    -- get_config 2>/dev/null | jq -r '.decimals // empty' || true)
+  if [ -n "$MARKET_CORE_DECIMALS" ]; then
+    json_set --argjson d "$MARKET_CORE_DECIMALS" '.collateral_decimals = $d'
+  fi
 else
   log "market-core already deployed: $MARKET_CORE"
 fi
@@ -193,7 +216,11 @@ fi
 
 # --- fund the treasury with test USDC ---------------------------------------
 TREASURY_FUNDED=$(json_get .treasury_funded_amount)
-FUND_AMOUNT=${TREASURY_FUND_AMOUNT:-10000000000000} # 1,000,000 USDC
+# Default fund amount is 1,000,000 USDC at 7 decimals. Scale by the
+# collateral's actual decimals so this stays 1,000,000 whole tokens if the
+# deployer swaps in an 18-decimal token.
+DEFAULT_FUND_AMOUNT=$((1000000 * 10 ** COLLATERAL_DECIMALS))
+FUND_AMOUNT=${TREASURY_FUND_AMOUNT:-$DEFAULT_FUND_AMOUNT}
 if [ "$TREASURY_FUNDED" != "$FUND_AMOUNT" ]; then
   log "minting $FUND_AMOUNT stroops of test USDC to treasury"
   stellar contract invoke --id "$USDC" --source-account "$DEPLOYER_KEY" \

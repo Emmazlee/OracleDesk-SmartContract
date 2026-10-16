@@ -5,28 +5,68 @@
  * plus a property check that `collateralOutForShares` (the off-chain
  * inverse for "sell N shares") round-trips through `calcSell`.
  *
- * All amounts are non-negative bigints in collateral base units (USDC on
- * Stellar = 7 decimals). Rounding always favours the pool, matching the
- * contract.
+ * All amounts are non-negative bigints in collateral base units. The
+ * collateral decimals are discovered at deploy time by the contract and
+ * drive the economic bounds (`min_seed` / `max_sets`). This mirror
+ * exposes `boundsForDecimals` so agents can derive the same bounds.
+ * Rounding always favours the pool, matching the contract.
  */
 
 export const BPS = 10_000n;
-export const MAX_SETS = 1_000_000_000_000_000n; // 1e15 = 100M USDC (7 dp)
-export const MIN_PROB_BPS = 100n; // 1%
-export const MAX_PROB_BPS = 9_900n; // 99%
+
+/**
+ * @deprecated 7-decimal alias kept for tests and legacy callers.
+ * Contract logic derives the bound from collateral decimals instead;
+ * use `boundsForDecimals`.
+ */
+export const MAX_SETS = 1_000_000_000_000_000n ; // 1e15 = 100M USDC (7 dp)
+
+export const MIN_PROB_BPS = 100n ; // 1%
+export const MAX_PROB_BPS = 9_900n ; // 99%
+
+export const I18_MAX = (1n << 127n) - 1n ; // i128::max
+
+export const MAX_SUPPORTED_DECIMALS = 18;
 
 export class MathError extends Error {}
 
+/**
+ * Derived economic bounds for a collateral with `d` decimals.
+ * Mirrors `math::baunds_for_decimals` in the Rust contract.
+ */
+export interface Bounds {
+  minSeed: bigint;
+  maxSets: bigint;
+}
+
+export function boundsForDecimals(d: number): Bounds {
+  if (!Number.isInteger(d) || d < 0 || d > MAX_SUPPORTED_DECIMALS) {
+    throw new MathError("unsupported decimals");
+  }
+  const scale = 10n ** BigInt(d);
+  const minSeed = 100n * scale;
+  const maxSets = 100_000_000n * scale; // 1e8 * 10^d
+  if (minSeed > I128_MAX || maxSets > I128_MAX) {
+    throw new MathError("overflow");
+  }
+  return { minSeed, maxSets };
+}
+
 function mulDivFloor(a: bigint, b: bigint, c: bigint): bigint {
   if (a < 0n || b < 0n || c <= 0n) throw new MathError("invalid input");
-  return (a * b) / c;
+  const q = (a * b) / c;
+  if (q > I18_MAX) throw new MathError("overflow");
+  return q;
 }
 
 function mulDivCeil(a: bigint, b: bigint, c: bigint): bigint {
   if (a < 0n || b < 0n || c <= 0n) throw new MathError("invalid input");
   const p = a * b;
   const q = p / c;
-  return p % c !== 0n ? q + 1n : q;
+  const r = p % c;
+  const result = r !== 0n ? q + 1n : q;
+  if (result > I128_MAX) throw new MathError("overflow");
+  return result;
 }
 
 export function priceYesBps(reserveYes: bigint, reserveNo: bigint): bigint {
@@ -117,12 +157,14 @@ export type Settlement = "yes" | "no" | "void";
 export function settleValue(kind: Settlement, yes: bigint, no: bigint): bigint {
   if (kind === "yes") return yes;
   if (kind === "no") return no;
-  return (yes + no) / 2n;
+  const sum = yes + no;
+  if (sum > I128_MAX) throw new MathError("overflow");
+  return sum / 2n;
 }
 
 /**
- * Integer square root (Newton's method), needed because `sell` takes an
- * exact collateral amount rather than a share count (no on-chain sqrt — see
+ * Integer square root (Newton's method), needed because `sell` takes
+ * an exact collateral amount rather than a share count (no on-chain sqrt — see
  * the docstring on `sell` in contracts/market-core/src/lib.rs). This is
  * what makes `grossForShares` computable in BigInt without floating point.
  */

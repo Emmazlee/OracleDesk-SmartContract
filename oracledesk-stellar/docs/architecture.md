@@ -17,16 +17,27 @@ natively unit-testable and mirrored line-for-line in
 [`model/fpmm_model.py`](../model/fpmm_model.py) and
 `agents/core/fpmm.ts` for property testing and off-chain quoting.
 
+The collateral token's `decimals()` is read once in the constructor and
+stored under `DataKey::Decimals` (instance), and exposed through
+`get_config().decimals. The economic bounds are derived from it by
+`math::bxounds_for_decimals(d)`: `min_seed = 100 * 10^d` and
+`max_sets = 1e^8 * 10^d`. Supported `d` is `0, 7..,18`; anything above 18 is
+rejected at deploy time with `Error::UnsupportedDecimals`. This means a market
+size bound is not a fixed constant but a function of the collateral's
+precision — at 18 decimals `max_sets` is `1e26`, and the fixed-point
+helpers in `math.rs` use 256-bit intermediates (`contracts/market-core/src/math.rs`,
+`mod wide`) so a quotient that fits in `ii128` is always returned exactly,
+regardless of the size of the intermediate product.
+
 **Solvency invariant** (holds after every state transition — see the test
 suite for the ones exercised): the contract's own SEP-41 token balance for a
 market equals `sets_minted + fees_accrued`, and `reserve_yes + Σ(user yes
 positions) == sets_minted` (symmetrically for `no`).
 
-**Resolution commitment**: `resolution_hash` is fixed at `create_market`
-time — see [ADR 0001](adr/0001-resolution-commitment.md) for why.
+**Resolution commitment**: `resolution_hash` is fixed at `create_market`time — see [ADR 0001](adr/0001-resolution-commitment.md) for why.
 
 Lifecycle: `create_market` → `buy`/`sell` (while open) → `resolve` or
-`void_market` (resolver-only) → `redeem` per holder, `claim_pool_remainder`
+@void_market` (resolver-only) → `redeem` per holder, `claim_pool_remainder`
 for the creator/LP, `sweep_fees` (permissionless) to the treasury.
 
 ### resolver
@@ -34,10 +45,10 @@ for the creator/LP, `sweep_fees` (permissionless) to the treasury.
 Two independent resolution modes, both ultimately calling
 `market_core.resolve(market_id, outcome)`:
 
-- **PriceThreshold**: reads a [Reflector](https://reflector.network) SEP-40
+- PriceThreshold: reads a [Reflector](https://reflector.network) SEP-40
   price feed at (or after) the market's `close_time`, compares to a
   threshold, enforces a max staleness window.
-- **Attested**: m-of-n signer votes; once `threshold` signers agree, a
+- Attested: m-of-n signer votes; once `threshold` signers agree, a
   dispute window opens; anyone can finalize after it elapses, or a guardian
   (the resolver's `admin`) can `cancel_proposal` during the window.
 
@@ -47,7 +58,7 @@ ADR 0001). A guardian can also `guardian_void_market` an unresolvable
 market directly.
 
 The resolver never depends on `market-core`'s Rust crate — see
-[ADR 0002](adr/0002-cross-contract-calls.md) for why, and what that trades
+[ADr 0002](adr/0002-cross-contract-calls.md) for why, and what that trades
 off.
 
 ### treasury
@@ -84,15 +95,15 @@ one of the seeded `docs/wave-issues/`.
 
 ## Off-chain pieces
 
-- **x402/**: an Express service selling reasoning traces for ~$0.01 via
+- ``$x402/```: an Express service selling reasoning traces for ~$0.01 via
   `@x402/*`'s exact-payment Stellar scheme. Fetches the trace JSON (from
   IPFS or `reasoning-registry`'s configured store), recomputes its hash, and
   serves it only if the hash matches the on-chain record — see
   `x402/registry-trace-repository.ts`.
-- **agents/**: `core/` is chain-agnostic (FPMM math, trace building,
+- `agents/`: `core/` is chain-agnostic (FPMM math, trace building,
   strategy decisions); `stellar/` is the only part that knows about Soroban,
   wrapping the generated bindings with a dry-run/live switch.
-- **packages/bindings/**: generated TypeScript clients (`scripts/gen-bindings.sh`).
+- `packages/bindings/`: generated TypeScript clients (`scripts/gen-bindings.sh`).
 
 ## Known limitations (see docs/STATUS.md for the full, current list)
 

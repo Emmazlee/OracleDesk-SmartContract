@@ -1,6 +1,6 @@
 # Status
 
-Last updated: 2026-09-21. This is the honest account of what works, what's
+Last updated: 2026-09-28. This is the honest account of what works, what's
 unverified, and what's left. Everything marked "verified" was demonstrated
 with real command output in the session that wrote this file, not asserted.
 
@@ -89,6 +89,20 @@ anywhere under `oracledesk-stellar/`.
   were slower (each ~4 minutes against this sandbox's npm registry) and so
   were run later in the session than the other two, but all four are now
   confirmed.
+- **Decimals-aware market-core**: `__constructor` reads the collateral
+  token's `decimals()` (SEP-41), rejects anything above 18 with
+  `Error::UnsupportedDecimals`, stores it under `DataKey::Decimals`, and
+  exposes it via `Config.decimals` from `get_config`. `MIN_SEED`/`MAX_SETS`
+  are no longer constants in contract logic; `math::bounds_for_decimals`
+  derives `min_seed = 100 * 10^d` and `max_sets = 1e8 * 10^d` for
+  `d in 0..=18`. `mul_div_floor`/`mul_div_ceil` now use a no_std `u128x2`
+  (hi/lo) widening multiply and divide, so results that fit in `i128` are
+  returned exactly even when the `a * b` intermediate exceeds `i128::MAX`.
+  `settle_value` uses `checked_add` and `redeem`/`claim_pool_remainder`
+  propagate the error. The Python (`model/fpmm_model.py`) and TypeScript
+  (`agents/core/fpmm.ts`) mirrors gained `bounds_for_decimals` /
+  `boundsForDecimals` and 18-decimal fixtures matching the Rust outputs.
+  `math.rs` remains `soroban_sdk`-free and its tests run natively.
 
 ## What's implemented but not fully round-trip verified
 
@@ -194,6 +208,10 @@ markers in the files themselves:
   testnet USDC issuer (needs verifying their current testnet address).
 - `.env.example` — the x402-on-Stellar facilitator URL to use for real
   payment settlement (none is hardcoded or guessed anywhere in this repo).
+- `Config` XDR shape changed with the addition of `decimals: u32`. Any
+  consumer of `packages/bindings/*` must re-sync generated bindings; the
+  vendored `market_core.wasm` copies in `contracts/resolver` and
+  `contracts/treasury` were refreshed alongside this change.
 
 ## Known limitations
 
@@ -215,6 +233,10 @@ markers in the files themselves:
   lifetime cap on capital ever committed to one market), documented in
   `contracts/treasury/src/lib.rs`'s comments, but worth stating here since
   it's easy to misread as a bug.
+- **Collateral decimals are fixed at deploy time.** Changing decimals after
+  deployment is not supported, and rebasing / fee-on-transfer tokens are
+  out of scope (see the solvency-accounting issue). The supported range is
+  `0..=18`; higher values revert in the constructor.
 
 ## Reproducing this
 

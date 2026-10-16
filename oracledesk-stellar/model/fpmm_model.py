@@ -14,7 +14,7 @@ computes the matching collateral_out here, then calls `sell` with a
 TypeScript (BigInt) for the trading agent; both must agree with this model.
 
 Conventions match math.rs: all amounts are non-negative ints in collateral
-base units (USDC on Stellar = 7 decimals). Rounding always favours the pool.
+base units. Rounding always favours the pool.
 """
 
 from dataclasses import dataclass
@@ -22,19 +22,49 @@ from math import isqrt
 import random
 
 BPS = 10_000
-MAX_SETS = 1_000_000_000_000_000  # 1e15 = 100M USDC (7 dp)
+MAX_SETS = 1_000_000_000_000_000  # 1e15 = 100M USDC (7 dp); deprecated alias
 MIN_PROB_BPS = 100
 MAX_PROB_BPS = 9_900
+I128_MAX = (1 << 127) - 1
+MAX_DECIMALS = 18
 
 
 class MathError(Exception):
     pass
 
 
+@dataclass(frozen=True)
+class Bounds:
+    min_seed: int
+    max_sets: int
+
+
+def bounds_for_decimals(d: int) -> Bounds:
+    """Derive the economic bounds for a collateral with `d` decimals.
+
+    Mirrors `math::bounds_for_decimals` in market-core: `min_seed = 100 *
+    10^d` and `max_sets = 1e8 * 10^d`. Raises `MathError` for `d > 18`.
+    """
+    if d < 0 or d > MAX_DECIMALS:
+        raise MathError("unsupported decimals")
+    scale = 10 ** d
+    return Bounds(min_seed=100 * scale, max_sets=100_000_000 * scale)
+
+
+def _fits_i128(x: int) -> bool:
+    return 0 <= x <= I128_MAX
+
+
+def _check_i128(x: int) -> int:
+    if not _fits_i128(x):
+        raise MathError("overflow")
+    return x
+
+
 def mul_div_floor(a: int, b: int, c: int) -> int:
     if a < 0 or b < 0 or c <= 0:
         raise MathError("invalid input")
-    return (a * b) // c
+    return _check_i128((a * b) // c)
 
 
 def mul_div_ceil(a: int, b: int, c: int) -> int:
@@ -42,7 +72,7 @@ def mul_div_ceil(a: int, b: int, c: int) -> int:
         raise MathError("invalid input")
     p = a * b
     q = p // c
-    return q + 1 if p % c != 0 else q
+    return _check_i128(q + 1 if p % c != 0 else q)
 
 
 def price_yes_bps(reserve_yes: int, reserve_no: int) -> int:
@@ -182,6 +212,27 @@ def _check_known_values():
     ), q
 
 
+def _check_known_values_18dp():
+    """18-decimal fixtures that must match the Rust `known_values_18dp` test.
+
+    The 7-decimal 1000/1000 -> 190 example scaled by 10**11, plus a seed at
+    `max_sets` for d = 18.
+    """
+    scale = 10 ** 11
+    q = calc_buy(1000 * scale, 1000 * scale, 100 * scale, 0)
+    assert (
+        q.shares_out,
+        q.new_reserve_bought,
+        q.new_reserve_other,
+    ) == (190 * scale, 910 * scale, 1100 * scale), q
+
+    b = bounds_for_decimals(18)
+    assert b.min_seed == 100 * 10 ** 18
+    assert b.max_sets == 100_000_000 * 10 ** 18
+    s = seed_reserves(b.max_sets, 5000)
+    assert s.reserve_yes > 0 and s.reserve_no > 0
+
+
 def _check_seed_opens_at_requested_probability():
     for p in (100, 2500, 5000, 7300, 9900):
         s = seed_reserves(10_000_000_000, p)
@@ -249,6 +300,7 @@ def _check_void_never_overpays():
 
 def run_all():
     _check_known_values()
+    _check_known_values_18dp()
     _check_seed_opens_at_requested_probability()
     _check_k_never_decreases_and_round_trip_never_profits()
     _check_gross_for_shares_inverts_calc_sell()

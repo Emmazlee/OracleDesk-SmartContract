@@ -18,6 +18,15 @@ are all native Soroban contracts, collateralized in a SEP-41 USDC token.
 Polymarket survives only as an optional, execution-free reference price an
 agent's strategy may read (see `agents/core/strategy.ts`).
 
+`market-core` reads the collateral token's `decimals()` once at deploy and
+derives its economic bounds from it (`min_seed = 100 * 10^d`,
+`max_sets = 1e8 * 10^d`, supported `d` in `0..=18`), so any SEP-41 token —
+7-decimal Classic USDC, 18-decimal Soroban-native assets, or bridged tokens —
+can back a market without changing the contract. The fixed-point helpers use
+256-bit intermediates, so a result that fits in `i128` is always returned
+exactly regardless of `d`. The Python (`model/fpmm_model.py`) and TypeScript
+(`agents/core/fpmm.ts`) mirrors track the same bounds and overflow behavior.
+
 ## Architecture
 
 ```mermaid
@@ -101,6 +110,12 @@ scripts/              deploy-testnet.sh, seed-market.sh, demo.sh,
 deployments/          testnet.json — the current live testnet addresses
 docs/                 architecture, ADRs, frontend-integration, STATUS
 ```
+
+The deploy script self-issues a 7-decimal Classic asset as test USDC. To
+exercise other decimals, deploy a SEP-41 token with the desired `decimals()`
+first and pass its contract ID as the collateral; `market-core`'s
+`__constructor` will reject anything above 18 decimals with
+`Error::UnsupportedDecimals`.
 
 ## Contributing
 
