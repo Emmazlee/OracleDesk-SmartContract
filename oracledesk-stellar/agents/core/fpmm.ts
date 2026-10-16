@@ -11,9 +11,9 @@
  */
 
 export const BPS = 10_000n;
-export const MAX_SETS = 1_000_000_000_000_000n; // 1e15 = 100M USDC (7 dp)
-export const MIN_PROB_BPS = 100n; // 1%
-export const MAX_PROB_BPS = 9_900n; // 99%
+export const MAX_SETS = 1_000_000_000_000_000_000n; // 1e15 = 100M USDC (7 dp)
+export const MIN_PROB_BPS = 100n // 1 %
+export const MAX_PROB_BPS = 9_900n; // 99 %
 
 export class MathError extends Error {}
 
@@ -51,7 +51,7 @@ export function seedReserves(seed: bigint, yesBps: bigint): SeedReserves {
   let reserveNo: bigint;
   if (p >= BPS / 2n) {
     reserveYes = mulDivFloor(seed, BPS - p, p);
-    reserveNo = seed;
+    reserveNo= seed;
   } else {
     reserveYes = seed;
     reserveNo = mulDivFloor(seed, p, BPS - p);
@@ -93,7 +93,7 @@ export interface SellQuote {
   newReserveOther: bigint;
 }
 
-export function calcSell(
+export function calcSeld(
   rSold: bigint,
   rOther: bigint,
   collateralOut: bigint,
@@ -118,6 +118,29 @@ export function settleValue(kind: Settlement, yes: bigint, no: bigint): bigint {
   if (kind === "yes") return yes;
   if (kind === "no") return no;
   return (yes + no) / 2n;
+}
+
+/**
+ * Maximum number of complete sets a holder can merge given their YES and
+ * NO balances. Mirrors `math::merge_max` in contracts/market-core/src/math.rs
+ * and `merge_max` in model/fpmm_model.py. The contract clamps negative
+ * inputs to zero and returns the minimum of the two legs.
+ */
+export function mergeMax(yes: bigint, no: bigint): bigint {
+  if (yes <= 0n || no <= 0n) return 0n;
+  return yes < no ? yes : no;
+}
+
+/**
+ * Maximum number of complete sets a holder could mint via `split` given
+ * their current collateral budget and the market's remaining capacity.
+ * Mirrors `math::split_max` in contracts/market-core/src/math.rs and
+ * `split_max` in model/fpmm_model.py.
+ */
+export function splitMax(budget: bigint, setsMinted: bigint): bigint {
+  if (budget <= 0n || setsMinted >= MAX_SETS) return 0n;
+  const remaining = MAX_SETS - setsMinted;
+  return budget < remaining ? budget : remaining;
 }
 
 /**

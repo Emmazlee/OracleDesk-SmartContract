@@ -2,7 +2,7 @@
 
 mod math;
 
-use math::{MathError, Settlement, BPS, MAX_SETS};
+use math::{merge_max, MathError, Settlement, BPS, MAX_SETS};
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error, token,
     Address, BytesN, Env, String,
@@ -216,6 +216,24 @@ pub struct Redeemed {
 pub struct FeesSwept {
     #[topic]
     pub market_id: u64,
+    pub amount: i128,
+}
+
+#[contractevent]
+pub struct SetsSplit {
+    #[topic]
+    pub market_id: u64,
+    #[topic]
+    pub holder: Address,
+    pub amount: i128,
+}
+
+#[contractevent]
+pub struct SetsMerged {
+    #[topic]
+    pub market_id: u64,
+    #[topic]
+    pub holder: Address,
     pub amount: i128,
 }
 
@@ -458,7 +476,7 @@ impl MarketCore {
         }
         Self::save_position(&env, market_id, &trader, &pos);
         Self::set_reserves(&mut m, outcome, q.new_reserve_sold, q.new_reserve_other);
-        m.sets_minted -= q.gross;
+        m.sets_minted = m.sets_minted.checked_sub(q.gross).ok_or(Error::Overflow)?;
         m.fees_accrued = m.fees_accrued.checked_add(q.fee).ok_or(Error::Overflow)?;
         Self::save_market(&env, market_id, &m);
 
@@ -478,6 +496,90 @@ impl MarketCore {
         }
         .publish(&env);
         Ok(q.shares_in)
+    }
+
+    // ----- split / merge --------------------------------------------------
+
+    /// Mints `amount` YES and `amount` NO shares to `holder` for `amount`
+    /// collateral. Does not touch the pool reserves or accrue fees.
+    ///
+    /// Lifecycle: requires `MarketStatus::Open`, `now < close_time`, and the
+    /// contract to be unpaused. After close, splitting has no purpose and
+    /// opens timing games, so it is rejected.
+    pub fn split(env: Env, holder: Address, market_id: u64, amount: i128) -> Result<(), Error> {
+        Self::assert_not_paused(&env)?;
+        holder.require_auth();
+        if amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+        let mut m = Self::load_market(&env, market_id)?;
+        Self::assert_tradable(&env, &m)?;
+        let new_sets = m.sets_minted.checked_add(amount).ok_or(Error::Overflow)?;
+        if new_sets > MAX_SETS {
+            return Err(Error::MarketTooLarge);
+        }
+
+        // effects
+        let mut pos = Self::load_position(&env, market_id, &holder);
+        pos.yes = pos.yes.checked_add(amount).ok_or(Error::Overflow)?;
+        pos.no = pos.no.checked_add(amount).ok_or(Error::Overflow)?;
+        m.sets_minted = new_sets;
+        Self::save_position(&env, market_id, &holder, &pos);
+        Self::save_market(&env, market_id, &m);
+
+        // interaction
+        Self::token(&env)?.transfer(&holder, env.current_contract_address(), &amount);
+
+        SetsSplit {
+            market_id,
+            holder,
+            amount,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Burns `amount` YES and `amount` NO shares from `holder` and returns
+    /// `amount` collateral. Does not touch the pool reserves or accrue fees.
+    ///
+    /// Lifecycle: requires `MarketStatus::Open`, but is allowed after
+    /// `close_time` and while the contract is paused. Merging is a pure exit
+    /// that cannot harm the pool, and letting users de-risk while the
+    /// resolver is slow is valuable. This asymmetry with `split` is
+    /// intentional.
+    pub fn merge(env: Env, holder: Address, market_id: u64, amount: i128) -> Result<(), Error> {
+        holder.require_auth();
+        if amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+        let mut m = Self::load_market(&env, market_id)?;
+        if m.status != MarketStatus::Open {
+            return Err(Error::MarketNotOpen);
+        }
+
+        let mut pos = Self::load_position(&env, market_id, &holder);
+        if pos.yes < amount || pos.no < amount {
+            return Err(Error::InsufficientShares);
+        }
+        let new_sets = m.sets_minted.checked_sub(amount).ok_or(Error::Overflow)?;
+
+        // effects
+        pos.yes -= amount;
+        pos.no -= amount;
+        m.sets_minted = new_sets;
+        Self::save_position(&env, market_id, &holder, &pos);
+        Self::save_market(&env, market_id, &m);
+
+        // interaction
+        Self::token(&env)?.transfer(&env.current_contract_address(), &holder, &amount);
+
+        SetsMerged {
+            market_id,
+            holder,
+            amount,
+        }
+        .publish(&env);
+        Ok(())
     }
 
     // ----- resolution -----------------------------------------------------
@@ -640,6 +742,12 @@ impl MarketCore {
         let m = Self::load_market(&env, market_id)?;
         let (r_sold, r_other) = Self::reserves_for(&m, outcome);
         Ok(math::calc_sell(r_sold, r_other, collateral_out, m.fee_bps)?.shares_in)
+    }
+
+    /// Maximum amount `holder` can merge right now: `min(yes, no)`.
+    pub fn quote_merge_max(env: Env, market_id: u64, holder: Address) -> i128 {
+        let pos = Self::load_position(&env, market_id, &holder);
+        merge_max(pos.yes, pos.no)
     }
 }
 
@@ -1141,6 +1249,332 @@ mod test {
                 },
             }])
             .try_resolve(&market_id, &Outcome::Yes)
+            .is_err());
+    }
+
+    #[test]
+    fn split_credits_both_legs_and_locks_collateral() {
+        let (env, client, creator, trader, _, collateral) = setup_market();
+        let market_id = client.create_market(
+            &creator,
+            &BytesN::from_array(&env, &[20u8; 32]),
+            &BytesN::from_array(&env, &[120u8; 32]),
+            &String::from_str(&env, "ipfs://split"),
+            &Category::Crypto,
+            &(env.ledger().timestamp() + 60_000),
+            &(100 * 10_000_000_i128),
+            &5000u32,
+        );
+        let token = soroban_sdk::token::TokenClient::new(&env, &collateral);
+        let before = token.balance(&trader);
+        let m_before = client.get_market(&market_id);
+
+        let amount = 5 * 10_000_000_i128;
+        client.split(&trader, &market_id, &amount);
+
+        let pos = client.get_position(&market_id, &trader);
+        assert_eq!(pos.yes, amount);
+        assert_eq!(pos.no, amount);
+        assert_eq!(token.balance(&trader), before - amount);
+
+        let m_after = client.get_market(&market_id);
+        assert_eq!(m_after.sets_minted, m_before.sets_minted + amount);
+        assert_eq!(m_after.reserve_yes, m_before.reserve_yes);
+        assert_eq!(m_after.reserve_no, m_before.reserve_no);
+        assert_eq!(m_after.fees_accrued, m_before.fees_accrued);
+    }
+
+    #[test]
+    fn merge_returns_collateral_at_par() {
+        let (env, client, creator, trader, _, collateral) = setup_market();
+        let market_id = client.create_market(
+            &creator,
+            &BytesN::from_array(&env, &[21u8; 32]),
+            &BytesN::from_array(&env, &[121u8; 32]),
+            &String::from_str(&env, "ipfs://merge"),
+            &Category::Crypto,
+            &(env.ledger().timestamp() + 60_000),
+            &(100 * 10_000_000_i128),
+            &5000u32,
+        );
+        let token = soroban_sdk::token::TokenClient::new(&env, &collateral);
+        let amount = 5 * 10_000_000_i128;
+        client.split(&trader, &market_id, &amount);
+
+        let m_before = client.get_market(&market_id);
+        let before = token.balance(&trader);
+        client.merge(&trader, &market_id, &amount);
+
+        let pos = client.get_position(&market_id, &trader);
+        assert_eq!(pos.yes, 0);
+        assert_eq!(pos.no, 0);
+        assert_eq!(token.balance(&trader), before + amount);
+
+        let m_after = client.get_market(&market_id);
+        assert_eq!(m_after.sets_minted, m_before.sets_minted - amount);
+        assert_eq!(m_after.reserve_yes, m_before.reserve_yes);
+        assert_eq!(m_after.reserve_no, m_before.reserve_no);
+        assert_eq!(m_after.fees_accrued, m_before.fees_accrued);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #13)")]
+    fn merge_rejects_unbalanced_position() {
+        let (env, client, creator, trader, _, _) = setup_market();
+        let market_id = client.create_market(
+            &creator,
+            &BytesN::from_array(&env, &[22u8; 32]),
+            &BytesN::from_array(&env, &[122u8; 32]),
+            &String::from_str(&env, "ipfs://merge-unbalanced"),
+            &Category::Crypto,
+            &(env.ledger().timestamp() + 60_000),
+            &(100 * 10_000_000_i128),
+            &5000u32,
+        );
+        client.buy(
+            &trader,
+            &market_id,
+            &Outcome::Yes,
+            &(10 * 10_000_000_i128),
+            &0_i128,
+        );
+        client.merge(&trader, &market_id, &(1_000_000_i128));
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #9)")]
+    fn split_rejected_after_close() {
+        let (env, client, creator, trader, _, _) = setup_market();
+        let close_time = env.ledger().timestamp() + 60_000;
+        let market_id = client.create_market(
+            &creator,
+            &BytesN::from_array(&env, &[23u8; 32]),
+            &BytesN::from_array(&env, &[123u8; 32]),
+            &String::from_str(&env, "ipfs://split-after-close"),
+            &Category::Crypto,
+            &close_time,
+            &(100 * 10_000_000_i128),
+            &5000u32,
+        );
+        env.ledger().set_timestamp(close_time + 1);
+        client.split(&trader, &market_id, &(1_000_000_i128));
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn split_rejected_when_paused() {
+        let (env, client, creator, trader, _, _) = setup_market();
+        let market_id = client.create_market(
+            &creator,
+            &BytesN::from_array(&env, &[24u8; 32]),
+            &BytesN::from_array(&env, &[124u8; 32]),
+            &String::from_str(&env, "ipfs://split-paused"),
+            &Category::Crypto,
+            &(env.ledger().timestamp() + 60_000),
+            &(100 * 10_000_000_i128),
+            &5000u32,
+        );
+        client.set_paused(&true);
+        client.split(&trader, &market_id, &(1_000_000_i128));
+    }
+
+    #[test]
+    fn merge_allowed_after_close_before_resolution() {
+        let (env, client, creator, trader, _, collateral) = setup_market();
+        let close_time = env.ledger().timestamp() + 60_000;
+        let market_id = client.create_market(
+            &creator,
+            &BytesN::from_array(&env, &[25u8; 32]),
+            &BytesN::from_array(&env, &[125u8; 32]),
+            &String::from_str(&env, "ipfs://merge-after-close"),
+            &Category::Crypto,
+            &close_time,
+            &(100 * 10_000_000_i128),
+            &5000u32,
+        );
+        let amount = 5 * 10_000_000_i128;
+        client.split(&trader, &market_id, &amount);
+        env.ledger().set_timestamp(close_time + 1);
+
+        let token = soroban_sdk::token::TokenClient::new(&env, &collateral);
+        let before = token.balance(&trader);
+        client.merge(&trader, &market_id, &amount);
+        assert_eq!(token.balance(&trader), before + amount);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #15)")]
+    fn split_respects_max_sets() {
+        let (env, client, creator, trader, _, _) = setup_market();
+        let market_id = client.create_market(
+            &creator,
+            &BytesN::from_array(&env, &[26u8; 32]),
+            &BytesN::from_array(&env, &[126u8; 32]),
+            &String::from_str(&env, "ipfs://split-max"),
+            &Category::Crypto,
+            &(env.ledger().timestamp() + 60_000),
+            &(100 * 10_000_000_i128),
+            &5000u32,
+        );
+        client.split(&trader, &market_id, &(MAX_SETS));
+    }
+
+    #[test]
+    fn invariant_holds_after_mixed_split_buy_sell_merge() {
+        let (env, client, creator, trader, _, collateral) = setup_market();
+        let market_id = client.create_market(
+            &creator,
+            &BytesN::from_array(&env, &[27u8; 32]),
+            &BytesN::from_array(&env, &[127u8; 32]),
+            &String::from_str(&env, "ipfs://invariant"),
+            &Category::Crypto,
+            &(env.ledger().timestamp() + 60_000),
+            &(100 * 10_000_000_i128),
+            &5000u32,
+        );
+        let token = soroban_sdk::token::TokenClient::new(&env, &collateral);
+
+        let check = |label: &str| {
+            let m = client.get_market(&market_id);
+            let cpos = client.get_position(&market_id, &creator);
+            let tpos = client.get_position(&market_id, &trader);
+            assert_eq!(
+                m.reserve_yes + cpos.yes + tpos.yes,
+                m.sets_minted,
+                "yes invariant broken at {}",
+                label
+            );
+            assert_eq!(
+                m.reserve_no + cpos.no + tpos.no,
+                m.sets_minted,
+                "no invariant broken at {}",
+                label
+            );
+            assert_eq!(
+                token.balance(&client.address),
+                m.sets_minted + m.fees_accrued,
+                "balance invariant broken at {}",
+                label
+            );
+        };
+
+        check("initial");
+        client.split(&trader, &market_id, &(7 * 10_000_000_i128));
+        check("after split");
+        client.buy(
+            &trader,
+            &market_id,
+            &Outcome::Yes,
+            &(3 * 10_000_000_i128),
+            &0_i128,
+        );
+        check("after buy");
+        client.sell(
+            &trader,
+            &market_id,
+            &Outcome::Yes,
+            &(1_000_000_i128),
+            &client.quote_sell(&market_id, &Outcome::Yes, &(1_000_000_i128)),
+        );
+        check("after sell");
+        client.merge(&trader, &market_id, &(2 * 10_000_000_i128));
+        check("after merge");
+    }
+
+    #[test]
+    fn void_total_payout_never_exceeds_sets_with_split() {
+        let (env, client, creator, _, _, collateral) = setup_market();
+        let market_id = client.create_market(
+            &creator,
+            &BytesN::from_array(&env, &[28u8; 32]),
+            &BytesN::from_array(&env, &[128u8; 32]),
+            &String::from_str(&env, "ipfs://void-split"),
+            &Category::Crypto,
+            &(env.ledger().timestamp() + 60_000),
+            &(100 * 10_000_000_i128),
+            &5000u32,
+        );
+        let token = soroban_sdk::token::TokenClient::new(&env, &collateral);
+        let collateral_in = token.balance(&client.address);
+
+        let h1 = Address::generate(&env);
+        let h2 = Address::generate(&env);
+        let h3 = Address::generate(&env);
+        let asset = StellarAssetClient::new(&env, &collateral);
+        asset.mint(&h1, &1_000_000_000_i128);
+        asset.mint(&h2, &1_000_000_000_i128);
+        asset.mint(&h3, &1_000_000_000_i128);
+
+        client.split(&h1, &market_id, &(3_333_333_i128));
+        client.split(&h2, &market_id, &(7_777_777_i128));
+        client.split(&h3, &market_id, &(1_111_111_i128));
+
+        client.void_market(&market_id);
+        let p1 = client.redeem(&h1, &market_id);
+        let p2 = client.redeem(&h2, &market_id);
+        let p3 = client.redeem(&h3, &market_id);
+        let pc = client.claim_pool_remainder(&market_id);
+        let total = p1 + p2 + p3 + pc;
+        assert!(total <= collateral_in, "payout {} > collateral {}", total, collateral_in);
+    }
+
+    #[test]
+    fn wrong_caller_cannot_split_for_another_holder() {
+        let (env, client, creator, _, _, _) = setup_market();
+        let market_id = client.create_market(
+            &creator,
+            &BytesN::from_array(&env, &[29u8; 32]),
+            &BytesN::from_array(&env, &[129u8; 32]),
+            &String::from_str(&env, "ipfs://wrong-split"),
+            &Category::Crypto,
+            &(env.ledger().timestamp() + 60_000),
+            &(100 * 10_000_000_i128),
+            &5000u32,
+        );
+        let victim = Address::generate(&env);
+        let attacker = Address::generate(&env);
+        env.set_auths(&[]);
+        assert!(client
+            .mock_auths(&[MockAuth {
+                address: &attacker,
+                invoke: &MockAuthInvoke {
+                    contract: &client.address,
+                    fn_name: "split",
+                    args: (victim.clone(), market_id, 1_000_000_i128).into_val(&env),
+                    sub_invokes: &[],
+                },
+            }])
+            .try_split(&victim, &market_id, &(1_000_000_i128))
+            .is_err());
+    }
+
+    #[test]
+    fn wrong_caller_cannot_merge_for_another_holder() {
+        let (env, client, creator, _, _, _) = setup_market();
+        let market_id = client.create_market(
+            &creator,
+            &BytesN::from_array(&env, &[30u8; 32]),
+            &BytesN::from_array(&env, &[130u8; 32]),
+            &String::from_str(&env, "ipfs://wrong-merge"),
+            &Category::Crypto,
+            &(env.ledger().timestamp() + 60_000),
+            &(100 * 10_000_000_i128),
+            &5000u32,
+        );
+        let victim = Address::generate(&env);
+        let attacker = Address::generate(&env);
+        env.set_auths(&[]);
+        assert!(client
+            .mock_auths(&[MockAuth {
+                address: &attacker,
+                invoke: &MockAuthInvoke {
+                    contract: &client.address,
+                    fn_name: "merge",
+                    args: (victim.clone(), market_id, 1_000_000_i128).into_val(&env),
+                    sub_invokes: &[],
+                },
+            }])
+            .try_merge(&victim, &market_id, &(1_000_000_i128))
             .is_err());
     }
 }
