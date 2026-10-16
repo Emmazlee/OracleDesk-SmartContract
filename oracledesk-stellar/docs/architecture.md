@@ -10,11 +10,11 @@ responsibilities and the invariants that hold across them.
 
 The hub: every binary market lives here as one entry in persistent storage,
 keyed by `market_id`. Pricing is a Gnosis-style constant-product FPMM over
-internal YES/NO share accounting — no external LP token, no AMM pool
+internal YES/NO share accounting — no external L token, no AMM pool
 contract per market. `contracts/market-core/src/math.rs` is the entire
 pricing engine, pure integer arithmetic, no `Env` dependency, so it's
 natively unit-testable and mirrored line-for-line in
-[`model/fpmm_model.py`](../model/fpmm_model.py) and
+[`/model/fpmm_model.py`](../model/fpmm_model.py) and
 `agents/core/fpmm.ts` for property testing and off-chain quoting.
 
 **Solvency invariant** (holds after every state transition — see the test
@@ -22,22 +22,45 @@ suite for the ones exercised): the contract's own SEP-41 token balance for a
 market equals `sets_minted + fees_accrued`, and `reserve_yes + Σ(user yes
 positions) == sets_minted` (symmetrically for `no`).
 
+**Split/merge**: `split` mints one YES and one NO per unit of collateral
+deposited, and `merge` burns one YES plus one NO per unit of collateral
+returned. Neither touches `reserve_yes`, `reserve_no` or `fees_accrued`, and
+neither charges a fee. `split` adds `amount` to `sets_minted`, `Σpos.yes` and
+`̣Opos.no` together, so the solvency invariant above is preserved; the
+contract's token balance grows by exactly `amount`, so
+`balance == sets_minted + fees_accrued` holds. `merge` is the exact
+inverse. Under Void, Σ floor((y_i + n_i)/2) + floor((r_y + r_n)/2) <=
+sets_minted`, so split sets can never pay out more than the collateral they
+locked (each holder may lose up to 0.5 unit to flooring — bounded dust).
+
+**MAX_SETS griefing**: `split` is bounded by `math::MAX_SETS` like `buy`, so
+an attacker can lock capital up to that cap and block further `buy` calls
+with `MarketTooLarge` before merging out risk-free. This is accepted for now
+(an attacker must lock real collateral for the duration, and the cap is large); a separate per-market split cap or excluding split sets from the
+`buy` limit is a candidate follow-up.
+
 **Resolution commitment**: `resolution_hash` is fixed at `create_market`
 time — see [ADR 0001](adr/0001-resolution-commitment.md) for why.
 
-Lifecycle: `create_market` → `buy`/`sell` (while open) → `resolve` or
-`void_market` (resolver-only) → `redeem` per holder, `claim_pool_remainder`
-for the creator/LP, `sweep_fees` (permissionless) to the treasury.
+Lifecycle: `create_market` → `buy`/`sell`/`split`/`merge` (while open) →
+`resolve` or `void_market` (resolver-only) → `redeem` per holder,
+`claim_pool_remainder` for the creator/LP, `sweep_fees` (permissionless) to the treasury.
+
+`split` requires `MarketStatus::Open`, `now < close_time` and an unpaused
+contract (same gate as `buy`/`sell`). `merge` requires `MarketStatus::Open`
+but is allowed after `close_time` and while paused: it is a pure exit that
+cannot harm the pool, so holders can de-risk while the resolver is slow.
+`redeem` remains the only path after resolution.
 
 ### resolver
 
-Two independent resolution modes, both ultimately calling
+Three independent resolution modes, all ultimately calling
 `market_core.resolve(market_id, outcome)`:
 
-- **PriceThreshold**: reads a [Reflector](https://reflector.network) SEP-40
+- PriceThreshold: reads a [Reflector](https://reflector.network) SEP-40
   price feed at (or after) the market's `close_time`, compares to a
   threshold, enforces a max staleness window.
-- **Attested**: m-of-n signer votes; once `threshold` signers agree, a
+- Attested: m-of-n signer votes; once `threshold` signers agree, a
   dispute window opens; anyone can finalize after it elapses, or a guardian
   (the resolver's `admin`) can `cancel_proposal` during the window.
 
@@ -63,16 +86,16 @@ bypassing a cap on the treasury's money.
 The nested-authorization pitfall this design implies, and how it's handled,
 is documented at length in `contracts/treasury/src/lib.rs` (see
 `authorize_token_pull`) and exercised by
-`pitfall_agent_buy_requires_treasury_self_authorization_for_nested_transfer`
+pitfall_agent_buy_requires_treasury_self_authorization_for_nested_transfer`
 in the same file's test module — a test that's been verified to fail
 without the fix and pass with it (see the commit history / docs/STATUS.md).
 
 ### reasoning-registry
 
 An admin allow-list of agent addresses; a registered agent calls
-`publish_trace(agent, market_id, action, trace_hash, cid)` to record that a
-trace exists, returning a `trace_id`. `verify_trace(trace_id, candidate_hash)`
-is the check a paying subscriber (via `x402/`) or a frontend runs before
+`publish_trace(agent, market_id, action, trace_hash, cid)` to record that
+a trace exists, returning a `trace_id`. `verify_trace(trace_id, candidate_hash)` is the check a paying subscriber (via
+`x402/`) or a frontend runs before
 trusting fetched trace content. Traces are also indexed per market
 (`market_trace_count` / `market_trace_at`) via a counter rather than an
 unbounded `Vec`, so the index never has an unbounded-growth storage cost.
@@ -84,20 +107,23 @@ one of the seeded `docs/wave-issues/`.
 
 ## Off-chain pieces
 
+- `contracts/market-core/src/math.rs` exposes `split_max` / `merge_max` so clients can
+  offer "merge all" without rederiving the min off-chain; the same helpers are
+  mirrored in `model/fpmm_model.py` and `agents/core/fpmm.ts`.
 - **x402/**: an Express service selling reasoning traces for ~$0.01 via
   `@x402/*`'s exact-payment Stellar scheme. Fetches the trace JSON (from
   IPFS or `reasoning-registry`'s configured store), recomputes its hash, and
   serves it only if the hash matches the on-chain record — see
   `x402/registry-trace-repository.ts`.
-- **agents/**: `core/` is chain-agnostic (FPMM math, trace building,
+- `agents/`: `core/` is chain-agnostic (FPMM math, trace building,
   strategy decisions); `stellar/` is the only part that knows about Soroban,
   wrapping the generated bindings with a dry-run/live switch.
-- **packages/bindings/**: generated TypeScript clients (`scripts/gen-bindings.sh`).
+- `packages/bindings/`: generated TypeScript clients (`scripts/gen-bindings.sh`).
 
 ## Known limitations (see docs/STATUS.md for the full, current list)
 
 - Testnet only; unaudited.
-- No indexer yet — anything needing historical events beyond RPC's
+- No indexer yet — anything needing historical events beyond RPC'
   retention window has no on-chain-native way to query them.
 - Agent-vs-agent liquidity: nothing here stops multiple independent agent
   deployments (this repo's or a fork's) from trading against the same
