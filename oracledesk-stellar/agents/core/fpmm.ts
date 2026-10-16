@@ -2,18 +2,18 @@
  * TypeScript/BigInt mirror of contracts/market-core/src/math.rs and
  * model/fpmm_model.py. Kept in lockstep with both by hand; fpmm.test.ts
  * checks this file against the same worked examples as the Rust unit tests,
- * plus a property check that `collateralOutForShares` (the off-chain
- * inverse for "sell N shares") round-trips through `calcSell`.
+ * plus a property check that `calcSellShares` matches the on-chain
+ * `sell_shares` exactly.
  *
  * All amounts are non-negative bigints in collateral base units (USDC on
  * Stellar = 7 decimals). Rounding always favours the pool, matching the
  * contract.
  */
 
-export const BPS = 10_000n;
-export const MAX_SETS = 1_000_000_000_000_000n; // 1e15 = 100M USDC (7 dp)
-export const MIN_PROB_BPS = 100n; // 1%
-export const MAX_PROB_BPS = 9_900n; // 99%
+export const BPS = 10_000n
+export const MAX_SETS = 1_000_000_000_000_000_000n // 1e15 = 100M USDC (7 dp)
+export const MIN_PROB_BPS = 100n // 1%
+export const MAX_PROB_BPS = 9_900n // 99%
 
 export class MathError extends Error {}
 
@@ -76,9 +76,9 @@ export function calcBuy(
 ): BuyQuote {
   if (collateralIn <= 0n || rBought <= 0n || rOther <= 0n) throw new MathError("invalid input");
   const fee = mulDivCeil(collateralIn, feeBps, BPS);
-  const net = collateralIn - fee;
-  if (net <= 0n) throw new MathError("invalid input");
-  const newOther = rOther + net;
+ const net = collateralIn - fee;
+ if (net <= 0n) throw new MathError("invalid input");
+ const newOther = rOther + net;
   const newBought = mulDivCeil(rBought, rOther, newOther);
   const sharesOut = rBought + net - newBought;
   if (sharesOut <= 0n) throw new MathError("invalid input");
@@ -170,6 +170,9 @@ export function grossForShares(
  * `max_shares_in` slippage bound of `sharesIn` (plus your own safety
  * margin — see docs/frontend-integration.md) should not need more shares
  * than intended.
+ *
+ * @deprecated Use `calcSellShares` instead, which matches the on-chain
+ * `sell_shares` exactly (including the pool-favoring correction loop).
  */
 export function collateralOutForShares(
   rSold: bigint,
@@ -179,4 +182,47 @@ export function collateralOutForShares(
 ): bigint {
   const gross = grossForShares(rSold, rOther, sharesIn, feeBps);
   return mulDivFloor(gross, BPS - feeBps, BPS);
+}
+
+export interface SellSharesQuote {
+  collateralOut: bigint;
+  fee: bigint;
+  gross: bigint;
+  newReserveSold: bigint;
+  newReserveOther: bigint;
+}
+
+/**
+ * Exact on-chain equivalent of `calc_sell_shares` in contracts/market-core/src/math.rs
+ * and model/fpmm_model.py. Solves the constant-product invariant for the
+ * gross sets to burn given an exact `sharesIn`, then applies the pool-favoring
+ * correction loop so that `newSold * newOther >= rSold * rOther`. Returns the
+ * collateral amount the trader receives, with the fee rounded up.
+ */
+export function calcSellShares(
+  rSold: bigint,
+  rOther: bigint,
+  sharesIn: bigint,
+  feeBps: bigint,
+): SellSharesQuote {
+  if (sharesIn <= 0n || rSold <= 0n || rOther <= 0n || feeBps >= BPS) {
+    throw new MathError("invalid input");
+  }
+  const b = rSold + sharesIn + rOther;
+  const disc = b * b - 4n * rOther * sharesIn;
+  if (disc < 0n) throw new MathError("insufficient liquidity");
+  let x = (b - isqrt(disc)) / 2n;
+  // Pool-favoring correction: the floored square root can overshoot the
+  // real root by at most one, and the discrete check below can need at
+  // most one further decrement. Never decrement below the true root.
+  while (x > 0n && (rSold + sharesIn - x) * (rOther - x) < rSold * rOther) {
+    x -= 1n;
+  }
+  if (x <= 0n || x >= rOther) throw new MathError("insufficient liquidity");
+  const collateralOut = mulDivFloor(x, BPS - feeBps, BPS);
+  if (collateralOut <= 0n) throw new MathError("invalid input");
+  const fee = x - collateralOut;
+  const newSold = rSold + sharesIn - x;
+  const newOther = rOther - x;
+  return { collateralOut, fee, gross: x, newReserveSold: newSold, newReserveOther: newOther };
 }

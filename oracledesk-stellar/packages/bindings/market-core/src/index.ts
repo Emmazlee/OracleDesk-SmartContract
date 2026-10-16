@@ -33,6 +33,7 @@ if (typeof window !== "undefined") {
 
 
 
+
 export const Errors = {
   1: {message:"NotInitialized"},
   2: {message:"Paused"},
@@ -71,29 +72,29 @@ export interface Market {
   /**
  * Unix seconds (ledger timestamp). Trading stops at this time.
  */
-close_time: u64;
+  close_time: u64;
   creator: string;
   /**
  * Snapshot of the fee at creation so later config changes never move it.
  */
-fee_bps: u32;
+  fee_bps: u32;
   /**
  * Trading fees waiting for `sweep_fees`.
  */
-fees_accrued: i128;
+  fees_accrued: i128;
   /**
  * Creator has withdrawn the pool remainder after finality.
  */
-lp_claimed: boolean;
+  lp_claimed: boolean;
   /**
  * IPFS CID / URI of the question metadata.
  */
-meta_uri: string;
+  meta_uri: string;
   /**
  * sha256 of the canonical question JSON stored off-chain (IPFS), so a
  * client can prove the text it shows is the text that was committed.
  */
-question_hash: Buffer;
+  question_hash: Buffer;
   reserve_no: i128;
   reserve_yes: i128;
   /**
@@ -103,11 +104,11 @@ question_hash: Buffer;
  * against this hash before configuring itself for the market. See
  * `docs/adr/0001-resolution-commitment.md`.
  */
-resolution_hash: Buffer;
+  resolution_hash: Buffer;
   /**
  * Complete sets in existence == collateral locked for this market.
  */
-sets_minted: i128;
+  sets_minted: i128;
   status: MarketStatus;
 }
 
@@ -147,6 +148,16 @@ export interface Client {
   sell: ({trader, market_id, outcome, collateral_out, max_shares_in}: {trader: string, market_id: u64, outcome: Outcome, collateral_out: i128, max_shares_in: i128}, options?: MethodOptions) => Promise<AssembledTransaction<Result<i128>>>
 
   /**
+   * Construct and simulate a sell_shares transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Sell exactly `shares_in` of `outcome` and receive the collateral the
+   * curve allows. Returns `collateral_out`. Reverts if less than
+   * `min_collateral_out` would be received. Rounding is pool-favoring:
+   * `k = r_yes * r_no` never decreases and the payout never exceeds what
+   * `sell` would charge the same share count for.
+   */
+  sell_shares: ({trader, market_id, outcome, shares_in, min_collateral_out}: {trader: string, market_id: u64, outcome: Outcome, shares_in: i128, min_collateral_out: i128}, options?: MethodOptions) => Promise<AssembledTransaction<Result<i128>>>
+
+  /**
    * Construct and simulate a redeem transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
    * Pays out `holder`'s position for a final market and clears it.
    * Losing positions clear with a payout of 0.
@@ -156,7 +167,7 @@ export interface Client {
   /**
    * Construct and simulate a resolve transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
    */
-  resolve: ({market_id, outcome}: {market_id: u64, outcome: Outcome}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+  resolve: ({market_id, outcome}: {market_id: u64, outcome: Outcome}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>
 
   /**
    * Construct and simulate a get_price transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
@@ -185,6 +196,13 @@ export interface Client {
    * Shares a `sell` for exactly `collateral_out` would consume right now.
    */
   quote_sell: ({market_id, outcome, collateral_out}: {market_id: u64, outcome: Outcome, collateral_out: i128}, options?: MethodOptions) => Promise<AssembledTransaction<Result<i128>>>
+
+  /**
+   * Construct and simulate a quote_sell_shares transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Collateral a `sell_shares` of exactly `shares_in` would return right
+   * now. Does not check tradability, consistent with `quote_sell`.
+   */
+  quote_sell_shares: ({market_id, outcome, shares_in}: {market_id: u64, outcome: Outcome, shares_in: i128}, options?: MethodOptions) => Promise<AssembledTransaction<Result<i128>>>
 
   /**
    * Construct and simulate a set_paused transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
@@ -224,100 +242,1126 @@ export interface Client {
   set_treasury: ({treasury}: {treasury: string}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
 
   /**
+   * Construct and simulate a set_fee transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   */
+  set_fee: ({fee_bps}: {fee_bps: u32}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
+   * Construct and simulate a set_admin transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   */
+  set_admin: ({admin}: {admin: string}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
+   * Construct and simulate a claim_lp transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   */
+  claim_lp: ({market_id}: {market_id: u64}, options?: MethodOptions) => Promise<AssembledTransaction<Result<i128>>>
+
+  /**
    * Construct and simulate a create_market transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Creates a market and seeds the pool. `creator` becomes the sole LP.
-   * `initial_yes_bps` in [100, 9900] sets the opening YES probability;
-   * the creator receives the leftover shares of the likelier outcome.
    */
-  create_market: ({creator, question_hash, resolution_hash, meta_uri, category, close_time, seed_amount, initial_yes_bps}: {creator: string, question_hash: Buffer, resolution_hash: Buffer, meta_uri: string, category: Category, close_time: u64, seed_amount: i128, initial_yes_bps: u32}, options?: MethodOptions) => Promise<AssembledTransaction<Result<u64>>>
+  create_market: ({creator, question_hash, meta_uri, close_time, category, resolution_hash, fee_bps}: {creator: string, question_hash: Buffer, meta_uri: string, close_time: u64, category: Category, resolution_hash: Buffer, fee_bps: Option<u32>}, options?: MethodOptions) => Promise<AssembledTransaction<Result<u64>>>
 
   /**
-   * Construct and simulate a set_default_fee_bps transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Affects markets created after the call; existing markets keep their fee.
+   * Construct and simulate a initialize transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
    */
-  set_default_fee_bps: ({fee_bps}: {fee_bps: u32}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
-
-  /**
-   * Construct and simulate a claim_pool_remainder transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Creator (the LP) withdraws whatever the pool still holds once final.
-   */
-  claim_pool_remainder: ({market_id}: {market_id: u64}, options?: MethodOptions) => Promise<AssembledTransaction<Result<i128>>>
-
+  initialize: ({admin, collateral, treasury, resolver, default_fee_bps}: {admin: string, collateral: string, treasury: string, resolver: string, default_fee_bps: u32}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
 }
+
 export class Client extends ContractClient {
-  static async deploy<T = Client>(
-        /** Constructor/Initialization Args for the contract's `__constructor` method */
-        {admin, collateral, treasury, resolver, default_fee_bps}: {admin: string, collateral: string, treasury: string, resolver: string, default_fee_bps: u32},
-    /** Options for initializing a Client as well as for calling a method, with extras specific to deploying. */
-    options: MethodOptions &
-      Omit<ContractClientOptions, "contractId"> & {
-        /** The hash of the Wasm blob, which must already be installed on-chain. */
-        wasmHash: Buffer | string;
-        /** Salt used to generate the contract's ID. Passed through to {@link Operation.createCustomContract}. Default: random. */
-        salt?: Buffer | Uint8Array;
-        /** The format used to decode `wasmHash`, if it's provided as a string. */
-        format?: "hex" | "base64";
-      }
-  ): Promise<AssembledTransaction<T>> {
-    return ContractClient.deploy({admin, collateral, treasury, resolver, default_fee_bps}, options)
+  readonly options: ContractClientOptions;
+
+  constructor(options: ContractClientOptions) {
+    super(new ContractSpec(metadata));
+    this.options = options;
   }
-  constructor(public readonly options: ContractClientOptions) {
-    super(
-      new ContractSpec([ "AAAABAAAAAAAAAAAAAAABUVycm9yAAAAAAAAEgAAAAAAAAAOTm90SW5pdGlhbGl6ZWQAAAAAAAEAAAAAAAAABlBhdXNlZAAAAAAAAgAAAAAAAAAKSW52YWxpZEZlZQAAAAAAAwAAAAAAAAANSW52YWxpZEFtb3VudAAAAAAAAAQAAAAAAAAAEkludmFsaWRQcm9iYWJpbGl0eQAAAAAABQAAAAAAAAAQSW52YWxpZENsb3NlVGltZQAAAAYAAAAAAAAADk1hcmtldE5vdEZvdW5kAAAAAAAHAAAAAAAAAA1NYXJrZXROb3RPcGVuAAAAAAAACAAAAAAAAAAMTWFya2V0Q2xvc2VkAAAACQAAAAAAAAAMTm90Q2xvc2VkWWV0AAAACgAAAAAAAAAITm90RmluYWwAAAALAAAAAAAAABBTbGlwcGFnZUV4Y2VlZGVkAAAADAAAAAAAAAASSW5zdWZmaWNpZW50U2hhcmVzAAAAAAANAAAAAAAAABVJbnN1ZmZpY2llbnRMaXF1aWRpdHkAAAAAAAAOAAAAAAAAAA5NYXJrZXRUb29MYXJnZQAAAAAADwAAAAAAAAAPTm90aGluZ1RvUmVkZWVtAAAAABAAAAAAAAAADkFscmVhZHlDbGFpbWVkAAAAAAARAAAAAAAAAAhPdmVyZmxvdwAAABI=",
-        "AAAABQAAAAAAAAAAAAAABVRyYWRlAAAAAAAAAQAAAAV0cmFkZQAAAAAAAAkAAAAAAAAACW1hcmtldF9pZAAAAAAAAAYAAAABAAAAAAAAAAZ0cmFkZXIAAAAAABMAAAABAAAAAAAAAAdvdXRjb21lAAAAB9AAAAAHT3V0Y29tZQAAAAAAAAAAAAAAAAZpc19idXkAAAAAAAEAAAAAAAAAAAAAAApjb2xsYXRlcmFsAAAAAAALAAAAAAAAAAAAAAAGc2hhcmVzAAAAAAALAAAAAAAAAAAAAAADZmVlAAAAAAsAAAAAAAAAAAAAAAtyZXNlcnZlX3llcwAAAAALAAAAAAAAAAAAAAAKcmVzZXJ2ZV9ubwAAAAAACwAAAAAAAAAC",
-        "AAAAAQAAAAAAAAAAAAAABkNvbmZpZwAAAAAABgAAAAAAAAAFYWRtaW4AAAAAAAATAAAAAAAAAApjb2xsYXRlcmFsAAAAAAATAAAAAAAAAA9kZWZhdWx0X2ZlZV9icHMAAAAABAAAAAAAAAAGcGF1c2VkAAAAAAABAAAAAAAAAAhyZXNvbHZlcgAAABMAAAAAAAAACHRyZWFzdXJ5AAAAEw==",
-        "AAAAAQAAAAAAAAAAAAAABk1hcmtldAAAAAAADQAAAAAAAAAIY2F0ZWdvcnkAAAfQAAAACENhdGVnb3J5AAAAPFVuaXggc2Vjb25kcyAobGVkZ2VyIHRpbWVzdGFtcCkuIFRyYWRpbmcgc3RvcHMgYXQgdGhpcyB0aW1lLgAAAApjbG9zZV90aW1lAAAAAAAGAAAAAAAAAAdjcmVhdG9yAAAAABMAAABGU25hcHNob3Qgb2YgdGhlIGZlZSBhdCBjcmVhdGlvbiBzbyBsYXRlciBjb25maWcgY2hhbmdlcyBuZXZlciBtb3ZlIGl0LgAAAAAAB2ZlZV9icHMAAAAABAAAACZUcmFkaW5nIGZlZXMgd2FpdGluZyBmb3IgYHN3ZWVwX2ZlZXNgLgAAAAAADGZlZXNfYWNjcnVlZAAAAAsAAAA4Q3JlYXRvciBoYXMgd2l0aGRyYXduIHRoZSBwb29sIHJlbWFpbmRlciBhZnRlciBmaW5hbGl0eS4AAAAKbHBfY2xhaW1lZAAAAAAAAQAAAChJUEZTIENJRCAvIFVSSSBvZiB0aGUgcXVlc3Rpb24gbWV0YWRhdGEuAAAACG1ldGFfdXJpAAAAEAAAAIZzaGEyNTYgb2YgdGhlIGNhbm9uaWNhbCBxdWVzdGlvbiBKU09OIHN0b3JlZCBvZmYtY2hhaW4gKElQRlMpLCBzbyBhCmNsaWVudCBjYW4gcHJvdmUgdGhlIHRleHQgaXQgc2hvd3MgaXMgdGhlIHRleHQgdGhhdCB3YXMgY29tbWl0dGVkLgAAAAAADXF1ZXN0aW9uX2hhc2gAAAAAAAPuAAAAIAAAAAAAAAAKcmVzZXJ2ZV9ubwAAAAAACwAAAAAAAAALcmVzZXJ2ZV95ZXMAAAAACwAAAS9Db21taXRtZW50IHRvIGhvdyB0aGlzIG1hcmtldCB3aWxsIGJlIHJlc29sdmVkLCBmaXhlZCBhdCBjcmVhdGlvbiBzbwp0aGUgY3JlYXRvciBjYW5ub3QgcGljayBmYXZvcmFibGUgcmVzb2x1dGlvbiBydWxlcyBhZnRlciBzZWVpbmcKdHJhZGluZyBhY3Rpdml0eS4gVGhlIHJlc29sdmVyIGNvbnRyYWN0IHZlcmlmaWVzIGEgcmV2ZWFsZWQgc3BlYwphZ2FpbnN0IHRoaXMgaGFzaCBiZWZvcmUgY29uZmlndXJpbmcgaXRzZWxmIGZvciB0aGUgbWFya2V0LiBTZWUKYGRvY3MvYWRyLzAwMDEtcmVzb2x1dGlvbi1jb21taXRtZW50Lm1kYC4AAAAAD3Jlc29sdXRpb25faGFzaAAAAAPuAAAAIAAAAEBDb21wbGV0ZSBzZXRzIGluIGV4aXN0ZW5jZSA9PSBjb2xsYXRlcmFsIGxvY2tlZCBmb3IgdGhpcyBtYXJrZXQuAAAAC3NldHNfbWludGVkAAAAAAsAAAAAAAAABnN0YXR1cwAAAAAH0AAAAAxNYXJrZXRTdGF0dXM=",
-        "AAAAAAAAAIFTcGVuZCBgY29sbGF0ZXJhbF9pbmAgdG8gYnV5IGBvdXRjb21lYCBzaGFyZXMuIFJldHVybnMgc2hhcmVzIHJlY2VpdmVkLgpSZXZlcnRzIGlmIGZld2VyIHRoYW4gYG1pbl9zaGFyZXNfb3V0YCB3b3VsZCBiZSByZWNlaXZlZC4AAAAAAAADYnV5AAAAAAUAAAAAAAAABnRyYWRlcgAAAAAAEwAAAAAAAAAJbWFya2V0X2lkAAAAAAAABgAAAAAAAAAHb3V0Y29tZQAAAAfQAAAAB091dGNvbWUAAAAAAAAAAA1jb2xsYXRlcmFsX2luAAAAAAAACwAAAAAAAAAObWluX3NoYXJlc19vdXQAAAAAAAsAAAABAAAD6QAAAAsAAAAD",
-        "AAAAAgAAAAAAAAAAAAAAB0RhdGFLZXkAAAAACQAAAAAAAAAAAAAABUFkbWluAAAAAAAAAAAAAAAAAAAKQ29sbGF0ZXJhbAAAAAAAAAAAAAAAAAAIVHJlYXN1cnkAAAAAAAAAAAAAAAhSZXNvbHZlcgAAAAAAAAAAAAAADURlZmF1bHRGZWVCcHMAAAAAAAAAAAAAAAAAAAZQYXVzZWQAAAAAAAAAAAAAAAAABk5leHRJZAAAAAAAAQAAAAAAAAAGTWFya2V0AAAAAAABAAAABgAAAAEAAAAAAAAACFBvc2l0aW9uAAAAAgAAAAYAAAAT",
-        "AAAAAgAAAAAAAAAAAAAAB091dGNvbWUAAAAAAgAAAAAAAAAAAAAAA1llcwAAAAAAAAAAAAAAAAJObwAA",
-        "AAAAAAAAARBSZWNlaXZlIGV4YWN0bHkgYGNvbGxhdGVyYWxfb3V0YCBieSBzZWxsaW5nIGBvdXRjb21lYCBzaGFyZXMuIFJldHVybnMKc2hhcmVzIHNvbGQuIFJldmVydHMgaWYgbW9yZSB0aGFuIGBtYXhfc2hhcmVzX2luYCB3b3VsZCBiZSBuZWVkZWQuCkNsaWVudHMgdHVybiAic2VsbCBOIHNoYXJlcyIgaW50byBgY29sbGF0ZXJhbF9vdXRgIG9mZi1jaGFpbgooc2VlIGBtYXRoOjpjYWxjX3NlbGxgIGRvY3MpIGFuZCBhZGQgYSBzbGlwcGFnZSBtYXJnaW4gdG8gYG1heF9zaGFyZXNfaW5gLgAAAARzZWxsAAAABQAAAAAAAAAGdHJhZGVyAAAAAAATAAAAAAAAAAltYXJrZXRfaWQAAAAAAAAGAAAAAAAAAAdvdXRjb21lAAAAB9AAAAAHT3V0Y29tZQAAAAAAAAAADmNvbGxhdGVyYWxfb3V0AAAAAAALAAAAAAAAAA1tYXhfc2hhcmVzX2luAAAAAAAACwAAAAEAAAPpAAAACwAAAAM=",
-        "AAAAAgAAAAAAAAAAAAAACENhdGVnb3J5AAAABgAAAAAAAAAAAAAABkNyeXB0bwAAAAAAAAAAAAAAAAAFTWFjcm8AAAAAAAAAAAAAAAAAAAtHZW9wb2xpdGljcwAAAAAAAAAAAAAAAAZTcG9ydHMAAAAAAAAAAAAAAAAAB0N1bHR1cmUAAAAAAAAAAAAAAAAFT3RoZXIAAAA=",
-        "AAAAAQAAAAAAAAAAAAAACFBvc2l0aW9uAAAAAgAAAAAAAAACbm8AAAAAAAsAAAAAAAAAA3llcwAAAAAL",
-        "AAAABQAAAAAAAAAAAAAACFJlZGVlbWVkAAAAAQAAAAhyZWRlZW1lZAAAAAMAAAAAAAAACW1hcmtldF9pZAAAAAAAAAYAAAABAAAAAAAAAAZob2xkZXIAAAAAABMAAAABAAAAAAAAAAZwYXlvdXQAAAAAAAsAAAAAAAAAAg==",
-        "AAAAAAAAAGlQYXlzIG91dCBgaG9sZGVyYCdzIHBvc2l0aW9uIGZvciBhIGZpbmFsIG1hcmtldCBhbmQgY2xlYXJzIGl0LgpMb3NpbmcgcG9zaXRpb25zIGNsZWFyIHdpdGggYSBwYXlvdXQgb2YgMC4AAAAAAAAGcmVkZWVtAAAAAAACAAAAAAAAAAZob2xkZXIAAAAAABMAAAAAAAAACW1hcmtldF9pZAAAAAAAAAYAAAABAAAD6QAAAAsAAAAD",
-        "AAAABQAAAAAAAAAAAAAACUZlZXNTd2VwdAAAAAAAAAEAAAAKZmVlc19zd2VwdAAAAAAAAgAAAAAAAAAJbWFya2V0X2lkAAAAAAAABgAAAAEAAAAAAAAABmFtb3VudAAAAAAACwAAAAAAAAAC",
-        "AAAAAAAAAAAAAAAHcmVzb2x2ZQAAAAACAAAAAAAAAAltYXJrZXRfaWQAAAAAAAAGAAAAAAAAAAdvdXRjb21lAAAAB9AAAAAHT3V0Y29tZQAAAAABAAAD6QAAAAIAAAAD",
-        "AAAAAgAAAAAAAAAAAAAADE1hcmtldFN0YXR1cwAAAAMAAAAAAAAAQlRyYWRpbmcgYWxsb3dlZCB1bnRpbCBgY2xvc2VfdGltZWAsIHRoZW4gd2FpdGluZyBmb3IgdGhlIHJlc29sdmVyLgAAAAAABE9wZW4AAAABAAAAIUZpbmFsLiBXaW5uaW5nIHNoYXJlcyByZWRlZW0gMToxLgAAAAAAAAhSZXNvbHZlZAAAAAEAAAfQAAAAB091dGNvbWUAAAAAAAAAACtJbnZhbGlkIG1hcmtldC4gRXZlcnkgc2hhcmUgcmVkZWVtcyBhdCAwLjUuAAAAAARWb2lk",
-        "AAAAAAAAAD9TcG90IHByaWNlIG9mIGBvdXRjb21lYCBpbiBicHMgKDAuLj0xMF8wMDApLiBZRVMgKyBOTyB+IDEwXzAwMC4AAAAACWdldF9wcmljZQAAAAAAAAIAAAAAAAAACW1hcmtldF9pZAAAAAAAAAYAAAAAAAAAB291dGNvbWUAAAAH0AAAAAdPdXRjb21lAAAAAAEAAAPpAAAABAAAAAM=",
-        "AAAAAAAAADlTaGFyZXMgYSBgYnV5YCBvZiBgY29sbGF0ZXJhbF9pbmAgd291bGQgcmV0dXJuIHJpZ2h0IG5vdy4AAAAAAAAJcXVvdGVfYnV5AAAAAAAAAwAAAAAAAAAJbWFya2V0X2lkAAAAAAAABgAAAAAAAAAHb3V0Y29tZQAAAAfQAAAAB091dGNvbWUAAAAAAAAAAA1jb2xsYXRlcmFsX2luAAAAAAAACwAAAAEAAAPpAAAACwAAAAM=",
-        "AAAAAAAAAAAAAAAKZ2V0X2NvbmZpZwAAAAAAAAAAAAEAAAPpAAAH0AAAAAZDb25maWcAAAAAAAM=",
-        "AAAAAAAAAAAAAAAKZ2V0X21hcmtldAAAAAAAAQAAAAAAAAAJbWFya2V0X2lkAAAAAAAABgAAAAEAAAPpAAAH0AAAAAZNYXJrZXQAAAAAAAM=",
-        "AAAAAAAAAEVTaGFyZXMgYSBgc2VsbGAgZm9yIGV4YWN0bHkgYGNvbGxhdGVyYWxfb3V0YCB3b3VsZCBjb25zdW1lIHJpZ2h0IG5vdy4AAAAAAAAKcXVvdGVfc2VsbAAAAAAAAwAAAAAAAAAJbWFya2V0X2lkAAAAAAAABgAAAAAAAAAHb3V0Y29tZQAAAAfQAAAAB091dGNvbWUAAAAAAAAAAA5jb2xsYXRlcmFsX291dAAAAAAACwAAAAEAAAPpAAAACwAAAAM=",
-        "AAAAAAAAAAAAAAAKc2V0X3BhdXNlZAAAAAAAAQAAAAAAAAAGcGF1c2VkAAAAAAABAAAAAQAAA+kAAAACAAAAAw==",
-        "AAAAAAAAAC1BbnlvbmUgY2FuIG1vdmUgYWNjcnVlZCBmZWVzIHRvIHRoZSB0cmVhc3VyeS4AAAAAAAAKc3dlZXBfZmVlcwAAAAAAAQAAAAAAAAAJbWFya2V0X2lkAAAAAAAABgAAAAEAAAPpAAAACwAAAAM=",
-        "AAAABQAAAAAAAAAAAAAADU1hcmtldENyZWF0ZWQAAAAAAAABAAAADm1hcmtldF9jcmVhdGVkAAAAAAAGAAAAAAAAAAltYXJrZXRfaWQAAAAAAAAGAAAAAQAAAAAAAAAHY3JlYXRvcgAAAAATAAAAAAAAAAAAAAAIY2F0ZWdvcnkAAAfQAAAACENhdGVnb3J5AAAAAAAAAAAAAAAKY2xvc2VfdGltZQAAAAAABgAAAAAAAAAAAAAAC3NlZWRfYW1vdW50AAAAAAsAAAAAAAAAAAAAAA9pbml0aWFsX3llc19icHMAAAAABAAAAAAAAAAC",
-        "AAAAAAAAAEFJbnZhbGlkIG9yIHVucmVzb2x2YWJsZSBtYXJrZXQuIEFsbG93ZWQgYW55IHRpbWUgYmVmb3JlIGZpbmFsaXR5LgAAAAAAAAt2b2lkX21hcmtldAAAAAABAAAAAAAAAAltYXJrZXRfaWQAAAAAAAAGAAAAAQAAA+kAAAACAAAAAw==",
-        "AAAABQAAAAAAAAAAAAAADk1hcmtldFJlc29sdmVkAAAAAAABAAAAD21hcmtldF9yZXNvbHZlZAAAAAACAAAAAAAAAAltYXJrZXRfaWQAAAAAAAAGAAAAAQAAACFOb25lIG1lYW5zIHRoZSBtYXJrZXQgd2FzIHZvaWRlZC4AAAAAAAAHb3V0Y29tZQAAAAPoAAAH0AAAAAdPdXRjb21lAAAAAAAAAAAC",
-        "AAAAAAAAAAAAAAAMZ2V0X3Bvc2l0aW9uAAAAAgAAAAAAAAAJbWFya2V0X2lkAAAAAAAABgAAAAAAAAAGaG9sZGVyAAAAAAATAAAAAQAAB9AAAAAIUG9zaXRpb24=",
-        "AAAAAAAAAAAAAAAMbWFya2V0X2NvdW50AAAAAAAAAAEAAAAG",
-        "AAAAAAAAAAAAAAAMc2V0X3Jlc29sdmVyAAAAAQAAAAAAAAAIcmVzb2x2ZXIAAAATAAAAAQAAA+kAAAACAAAAAw==",
-        "AAAAAAAAAAAAAAAMc2V0X3RyZWFzdXJ5AAAAAQAAAAAAAAAIdHJlYXN1cnkAAAATAAAAAQAAA+kAAAACAAAAAw==",
-        "AAAAAAAAAEdSdW5zIGF0b21pY2FsbHkgYXQgZGVwbG95IHRpbWUsIHNvIG5vYm9keSBjYW4gZnJvbnQtcnVuIGluaXRpYWxpemF0aW9uLgAAAAANX19jb25zdHJ1Y3RvcgAAAAAAAAUAAAAAAAAABWFkbWluAAAAAAAAEwAAAAAAAAAKY29sbGF0ZXJhbAAAAAAAEwAAAAAAAAAIdHJlYXN1cnkAAAATAAAAAAAAAAhyZXNvbHZlcgAAABMAAAAAAAAAD2RlZmF1bHRfZmVlX2JwcwAAAAAEAAAAAA==",
-        "AAAAAAAAAMhDcmVhdGVzIGEgbWFya2V0IGFuZCBzZWVkcyB0aGUgcG9vbC4gYGNyZWF0b3JgIGJlY29tZXMgdGhlIHNvbGUgTFAuCmBpbml0aWFsX3llc19icHNgIGluIFsxMDAsIDk5MDBdIHNldHMgdGhlIG9wZW5pbmcgWUVTIHByb2JhYmlsaXR5Owp0aGUgY3JlYXRvciByZWNlaXZlcyB0aGUgbGVmdG92ZXIgc2hhcmVzIG9mIHRoZSBsaWtlbGllciBvdXRjb21lLgAAAA1jcmVhdGVfbWFya2V0AAAAAAAACAAAAAAAAAAHY3JlYXRvcgAAAAATAAAAAAAAAA1xdWVzdGlvbl9oYXNoAAAAAAAD7gAAACAAAAAAAAAAD3Jlc29sdXRpb25faGFzaAAAAAPuAAAAIAAAAAAAAAAIbWV0YV91cmkAAAAQAAAAAAAAAAhjYXRlZ29yeQAAB9AAAAAIQ2F0ZWdvcnkAAAAAAAAACmNsb3NlX3RpbWUAAAAAAAYAAAAAAAAAC3NlZWRfYW1vdW50AAAAAAsAAAAAAAAAD2luaXRpYWxfeWVzX2JwcwAAAAAEAAAAAQAAA+kAAAAGAAAAAw==",
-        "AAAAAAAAAEhBZmZlY3RzIG1hcmtldHMgY3JlYXRlZCBhZnRlciB0aGUgY2FsbDsgZXhpc3RpbmcgbWFya2V0cyBrZWVwIHRoZWlyIGZlZS4AAAATc2V0X2RlZmF1bHRfZmVlX2JwcwAAAAABAAAAAAAAAAdmZWVfYnBzAAAAAAQAAAABAAAD6QAAAAIAAAAD",
-        "AAAAAAAAAERDcmVhdG9yICh0aGUgTFApIHdpdGhkcmF3cyB3aGF0ZXZlciB0aGUgcG9vbCBzdGlsbCBob2xkcyBvbmNlIGZpbmFsLgAAABRjbGFpbV9wb29sX3JlbWFpbmRlcgAAAAEAAAAAAAAACW1hcmtldF9pZAAAAAAAAAYAAAABAAAD6QAAAAsAAAAD" ]),
-      options
-    )
+
+  buy = async ({trader, market_id, outcome, collateral_in, min_shares_out}: {trader: string, market_id: u64, outcome: Outcome, collateral_in: i128, min_shares_out: i128}, options?: MethodOptions): Promise<AssembledTransaction<Result<i128>>> => {
+    return this.call("buy", {trader, market_id, outcome, collateral_in, min_shares_out}, options);
   }
-  public readonly fromJSON = {
-    buy: this.txFromJSON<Result<i128>>,
-        sell: this.txFromJSON<Result<i128>>,
-        redeem: this.txFromJSON<Result<i128>>,
-        resolve: this.txFromJSON<Result<void>>,
-        get_price: this.txFromJSON<Result<u32>>,
-        quote_buy: this.txFromJSON<Result<i128>>,
-        get_config: this.txFromJSON<Result<Config>>,
-        get_market: this.txFromJSON<Result<Market>>,
-        quote_sell: this.txFromJSON<Result<i128>>,
-        set_paused: this.txFromJSON<Result<void>>,
-        sweep_fees: this.txFromJSON<Result<i128>>,
-        void_market: this.txFromJSON<Result<void>>,
-        get_position: this.txFromJSON<Position>,
-        market_count: this.txFromJSON<u64>,
-        set_resolver: this.txFromJSON<Result<void>>,
-        set_treasury: this.txFromJSON<Result<void>>,
-        create_market: this.txFromJSON<Result<u64>>,
-        set_default_fee_bps: this.txFromJSON<Result<void>>,
-        claim_pool_remainder: this.txFromJSON<Result<i128>>
+
+  sell = async ({trader, market_id, outcome, collateral_out, max_shares_in}: {trader: string, market_id: u64, outcome: Outcome, collateral_out: i128, max_shares_in: i128}, options?: MethodOptions): Promise<AssembledTransaction<Result<i128>>> => {
+    return this.call("sell", {trader, market_id, outcome, collateral_out, max_shares_in}, options);
   }
+
+  sell_shares = async ({trader, market_id, outcome, shares_in, min_collateral_out}: {trader: string, market_id: u64, outcome: Outcome, shares_in: i128, min_collateral_out: i128}, options?: MethodOptions): Promise<AssembledTransaction<Result<i128>>> => {
+    return this.call("sell_shares", {trader, market_id, outcome, shares_in, min_collateral_out}, options);
+  }
+
+  redeem = async ({holder, market_id}: {holder: string, market_id: u64}, options?: MethodOptions): Promise<AssembledTransaction<Result<i128>>> => {
+    return this.call("redeem", {holder, market_id}, options);
+  }
+
+  resolve = async ({market_id, outcome}: {market_id: u64, outcome: Outcome}, options?: MethodOptions): Promise<AssembledTransaction<Result<void>>> => {
+    return this.call("resolve", {market_id, outcome}, options);
+  }
+
+  get_price = async ({market_id, outcome}: {market_id: u64, outcome: Outcome}, options?: MethodOptions): Promise<AssembledTransaction<Result<u32>>> => {
+    return this.call("get_price", {market_id, outcome}, options);
+  }
+
+  quote_buy = async ({market_id, outcome, collateral_in}: {market_id: u64, outcome: Outcome, collateral_in: i128}, options?: MethodOptions): Promise<AssembledTransaction<Result<i128>>> => {
+    return this.call("quote_buy", {market_id, outcome, collateral_in}, options);
+  }
+
+  get_config = async (options?: MethodOptions): Promise<AssembledTransaction<Result<Config>>> => {
+    return this.call("get_config", {}, options);
+  }
+
+  get_market = async ({market_id}: {market_id: u64}, options?: MethodOptions): Promise<AssembledTransaction<Result<Market>>> => {
+    return this.call("get_market", {market_id}, options);
+  }
+
+  quote_sell = async ({market_id, outcome, collateral_out}: {market_id: u64, outcome: Outcome, collateral_out: i128}, options?: MethodOptions): Promise<AssembledTransaction<Result<i128>>> => {
+    return this.call("quote_sell", {market_id, outcome, collateral_out}, options);
+  }
+
+  quote_sell_shares = async ({market_id, outcome, shares_in}: {market_id: u64, outcome: Outcome, shares_in: i128}, options?: MethodOptions): Promise<AssembledTransaction<Result<i128>>> => {
+    return this.call("quote_sell_shares", {market_id, outcome, shares_in}, options);
+  }
+
+  set_paused = async ({paused}: {paused: boolean}, options?: MethodOptions): Promise<AssembledTransaction<Result<void>>> => {
+    return this.call("set_paused", {paused}, options);
+  }
+
+  sweep_fees = async ({market_id}: {market_id: u64}, options?: MethodOptions): Promise<AssembledTransaction<Result<i128>>> => {
+    return this.call("sweep_fees", {market_id}, options);
+  }
+
+  void_market = async ({market_id}: {market_id: u64}, options?: MethodOptions): Promise<AssembledTransaction<Result<void>>> => {
+    return this.call("void_market", {market_id}, options);
+  }
+
+  get_position = async ({market_id, holder}: {market_id: u64, holder: string}, options?: MethodOptions): Promise<AssembledTransaction<Position>> => {
+    return this.call("get_position", {market_id, holder}, options);
+  }
+
+  market_count = async (options?: MethodOptions): Promise<AssembledTransaction<u64>> => {
+    return this.call("market_count", {}, options);
+  }
+
+  set_resolver = async ({resolver}: {resolver: string}, options?: MethodOptions): Promise<AssembledTransaction<Result<void>>> => {
+    return this.call("set_resolver", {resolver}, options);
+  }
+
+  set_treasury = async ({treasury}: {treasury: string}, options?: MethodOptions): Promise<AssembledTransaction<Result<void>>> => {
+    return this.call("set_treasury", {treasury}, options);
+  }
+
+  set_fee = async ({fee_bps}: {fee_bps: u32}, options?: MethodOptions): Promise<AssembledTransaction<Result<void>>> => {
+    return this.call("set_fee", {fee_bps}, options);
+  }
+
+  set_admin = async ({admin}: {admin: string}, options?: MethodOptions): Promise<AssembledTransaction<Result<void>>> => {
+    return this.call("set_admin", {admin}, options);
+  }
+
+  claim_lp = async ({market_id}: {market_id: u64}, options?: MethodOptions): Promise<AssembledTransaction<Result<i128>>> => {
+    return this.call("claim_lp", {market_id}, options);
+  }
+
+  create_market = async ({creator, question_hash, meta_uri, close_time, category, resolution_hash, fee_bps}: {creator: string, question_hash: Buffer, meta_uri: string, close_time: u64, category: Category, resolution_hash: Buffer, fee_bps: Option<u32>}, options?: MethodOptions): Promise<AssembledTransaction<Result<u64>>> => {
+    return this.call("create_market", {creator, question_hash, meta_uri, close_time, category, resolution_hash, fee_bps}, options);
+  }
+
+  initialize = async ({admin, collateral, treasury, resolver, default_fee_bps}: {admin: string, collateral: string, treasury: string, resolver: string, default_fee_bps: u32}, options?: MethodOptions): Promise<AssembledTransaction<Result<void>>> => {
+    return this.call("initialize", {admin, collateral, treasury, resolver, default_fee_bps}, options);
+  }
+}
+
+export const networks = {
+  testnet: {
+    networkPassphrase: "Test S CF Network ; September 2015",
+    contractId: "",
+  },
+  futurenet: {
+    networkPassphrase: "Test S CF Network ; September 2015",
+    contractId: "",
+  },
+  mainnet: {
+    networkPassphrase: "Public Global Key Network ; September 2015",
+    contractId: "",
+  },
+}
+
+export const metadata = {
+  "entries": [
+    {
+      "type": "function",
+      "name": "buy",
+      "inputs": [
+        {
+          "name": "trader",
+          "type": {
+            "type": "address"
+          }
+        },
+        {
+          "name": "market_id",
+          "type": {
+            "type": "u64"
+          }
+        },
+        {
+          "name": "outcome",
+          "type": {
+            "type": "custom",
+            "name": "Outcome"
+          }
+        },
+        {
+          "name": "collateral_in",
+          "type": {
+            "type": "i128"
+          }
+        },
+        {
+          "name": "min_shares_out",
+          "type": {
+            "type": "i128"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "type": "result",
+          "value": {
+            "type": "i128"
+          }
+        }
+      ]
+    },
+    {
+      "type": "function",
+      "name": "sell",
+      "inputs": [
+        {
+          "name": "trader",
+          "type": {
+            "type": "address"
+          }
+        },
+        {
+          "name": "market_id",
+          "type": {
+            "type": "u64"
+          }
+        },
+        {
+          "name": "outcome",
+          "type": {
+            "type": "custom",
+            "name": "Outcome"
+          }
+        },
+        {
+          "name": "collateral_out",
+          "type": {
+            "type": "i128"
+          }
+        },
+        {
+          "name": "max_shares_in",
+          "type": {
+            "type": "i128"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "type": "result",
+          "value": {
+            "type": "i128"
+          }
+        }
+      ]
+    },
+    {
+      "type": "function",
+      "name": "sell_shares",
+      "inputs": [
+        {
+          "name": "trader",
+          "type": {
+            "type": "address"
+          }
+        },
+        {
+          "name": "market_id",
+          "type": {
+            "type": "u64"
+          }
+        },
+        {
+          "name": "outcome",
+          "type": {
+            "type": "custom",
+            "name": "Outcome"
+          }
+        },
+        {
+          "name": "shares_in",
+          "type": {
+            "type": "i128"
+          }
+        },
+        {
+          "name": "min_collateral_out",
+          "type": {
+            "type": "i128"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "type": "result",
+          "value": {
+            "type": "i128"
+          }
+        }
+      ]
+    },
+    {
+      "type": "function",
+      "name": "redeem",
+      "inputs": [
+        {
+          "name": "holder",
+          "type": {
+            "type": "address"
+          }
+        },
+        {
+          "name": "market_id",
+          "type": {
+            "type": "u64"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "type": "result",
+          "value": {
+            "type": "i128"
+          }
+        }
+      ]
+    },
+    {
+      "type": "function",
+      "name": "resolve",
+      "inputs": [
+        {
+          "name": "market_id",
+          "type": {
+            "type": "u64"
+          }
+        },
+        {
+          "name": "outcome",
+          "type": {
+            "type": "custom",
+            "name": "Outcome"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "type": "result",
+          "value": {
+            "type": "void"
+          }
+        }
+      ]
+    },
+    {
+      "type": "function",
+      "name": "get_price",
+      "inputs": [
+        {
+          "name": "market_id",
+          "type": {
+            "type": "u64"
+          }
+        },
+        {
+          "name": "outcome",
+          "type": {
+            "type": "custom",
+            "name": "Outcome"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "type": "result",
+          "value": {
+            "type": "u32"
+          }
+        }
+      ]
+    },
+    {
+      "type": "function",
+      "name": "quote_buy",
+      "inputs": [
+        {
+          "name": "market_id",
+          "type": {
+            "type": "u64"
+          }
+        },
+        {
+          "name": "outcome",
+          "type": {
+            "type": "custom",
+            "name": "Outcome"
+          }
+        },
+        {
+          "name": "collateral_in",
+          "type": {
+            "type": "i128"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "type": "result",
+          "value": {
+            "type": "i128"
+          }
+        }
+      ]
+    },
+    {
+      "type": "function",
+      "name": "get_config",
+      "inputs": [],
+      "outputs": [
+        {
+          "type": "result",
+          "value": {
+            "type": "custom",
+            "name": "Config"
+          }
+        }
+      ]
+    },
+    {
+      "type": "function",
+      "name": "get_market",
+      "inputs": [
+        {
+          "name": "market_id",
+          "type": {
+            "type": "u64"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "type": "result",
+          "value": {
+            "type": "custom",
+            "name": "Market"
+          }
+        }
+      ]
+    },
+    {
+      "type": "function",
+      "name": "quote_sell",
+      "inputs": [
+        {
+          "name": "market_id",
+          "type": {
+            "type": "u64"
+          }
+        },
+        {
+          "name": "outcome",
+          "type": {
+            "type": "custom",
+            "name": "Outcome"
+          }
+        },
+        {
+          "name": "collateral_out",
+          "type": {
+            "type": "i128"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "type": "result",
+          "value": {
+            "type": "i128"
+          }
+        }
+      ]
+    },
+    {
+      "type": "function",
+      "name": "quote_sell_shares",
+      "inputs": [
+        {
+          "name": "market_id",
+          "type": {
+            "type": "u64"
+          }
+        },
+        {
+          "name": "outcome",
+          "type": {
+            "type": "custom",
+            "name": "Outcome"
+          }
+        },
+        {
+          "name": "shares_in",
+          "type": {
+            "type": "i128"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "type": "result",
+          "value": {
+            "type": "i128"
+          }
+        }
+      ]
+    },
+    {
+      "type": "function",
+      "name": "set_paused",
+      "inputs": [
+        {
+          "name": "paused",
+          "type": {
+            "type": "boolean"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "type": "result",
+          "value": {
+            "type": "void"
+          }
+        }
+      ]
+    },
+    {
+      "type": "function",
+      "name": "sweep_fees",
+      "inputs": [
+        {
+          "name": "market_id",
+          "type": {
+            "type": "u64"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "type": "result",
+          "value": {
+            "type": "i128"
+          }
+        }
+      ]
+    },
+    {
+      "type": "function",
+      "name": "void_market",
+      "inputs": [
+        {
+          "name": "market_id",
+          "type": {
+            "type": "u64"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "type": "result",
+          "value": {
+            "type": "void"
+          }
+        }
+      ]
+    },
+    {
+      "type": "function",
+      "name": "get_position",
+      "inputs": [
+        {
+          "name": "market_id",
+          "type": {
+            "type": "u64"
+          }
+        },
+        {
+          "name": "holder",
+          "type": {
+            "type": "address"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "type": "custom",
+          "name": "Position"
+        }
+      ]
+    },
+    {
+      "type": "function",
+      "name": "market_count",
+      "inputs": [],
+      "outputs": [
+        {
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "type": "function",
+      "name": "set_resolver",
+      "inputs": [
+        {
+          "name": "resolver",
+          "type": {
+            "type": "address"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "type": "result",
+          "value": {
+            "type": "void"
+          }
+        }
+      ]
+    },
+    {
+      "type": "function",
+      "name": "set_treasury",
+      "inputs": [
+        {
+          "name": "treasury",
+          "type": {
+            "type": "address"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "type": "result",
+          "value": {
+            "type": "void"
+          }
+        }
+      ]
+    },
+    {
+      "type": "function",
+      "name": "set_fee",
+      "inputs": [
+        {
+          "name": "fee_bps",
+          "type": {
+            "type": "u32"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "type": "result",
+          "value": {
+            "type": "void"
+          }
+        }
+      ]
+    },
+    {
+      "type": "function",
+      "name": "set_admin",
+      "inputs": [
+        {
+          "name": "admin",
+          "type": {
+            "type": "address"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "type": "result",
+          "value": {
+            "type": "void"
+          }
+        }
+      ]
+    },
+    {
+      "type": "function",
+      "name": "claim_lp",
+      "inputs": [
+        {
+          "name": "market_id",
+          "type": {
+            "type": "u64"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "type": "result",
+          "value": {
+            "type": "i128"
+          }
+        }
+      ]
+    },
+    {
+      "type": "function",
+      "name": "create_market",
+      "inputs": [
+        {
+          "name": "creator",
+          "type": {
+            "type": "address"
+          }
+        },
+        {
+          "name": "question_hash",
+          "type": {
+            "type": "bytes"
+          }
+        },
+        {
+          "name": "meta_uri",
+          "type": "string"
+        },
+        {
+          "name": "close_time",
+          "type": {
+            "type": "u64"
+          }
+        },
+        {
+          "name": "category",
+          "type": {
+            "type": "custom",
+            "name": "Category"
+          }
+        },
+        {
+          "name": "resolution_hash",
+          "type": {
+            "type": "bytes"
+          }
+        },
+        {
+          "name": "fee_bps",
+          "type": {
+            "type": "option",
+            "value": {
+              "type": "u32"
+            }
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "type": "result",
+          "value": {
+            "type": "u64"
+          }
+        }
+      ]
+    },
+    {
+      "type": "function",
+      "name": "initialize",
+      "inputs": [
+        {
+          "name": "admin",
+          "type": {
+            "type": "address"
+          }
+        },
+        {
+          "name": "collateral",
+          "type": {
+            "type": "address"
+          }
+        },
+        {
+          "name": "treasury",
+          "type": {
+            "type": "address"
+          }
+        },
+        {
+          "name": "resolver",
+          "type": {
+            "type": "address"
+          }
+        },
+        {
+          "name": "default_fee_bps",
+          "type": {
+            "type": "u32"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "type": "result",
+          "value": {
+            "type": "void"
+          }
+        }
+      ]
+    },
+    {
+      "type": "event",
+      "name": "Trade",
+      "inputs": [
+        {
+          "name": "trader",
+          "type": {
+            "type": "address"
+          }
+        },
+        {
+          "name": "market_id",
+          "type": {
+            "type": "u64"
+          }
+        },
+        {
+          "name": "outcome",
+          "type": {
+            "type": "custom",
+            "name": "Outcome"
+          }
+        },
+        {
+          "name": "is_buy",
+          "type": {
+            "type": "boolean"
+          }
+        },
+        {
+          "name": "shares",
+          "type": {
+            "type": "i128"
+          }
+        },
+        {
+          "name": "collateral",
+          "type": {
+            "type": "i128"
+          }
+        },
+        {
+          "name": "fee",
+          "type": {
+            "type": "i128"
+          }
+        }
+      ]
+    },
+    {
+      "type": "enum",
+      "name": "Outcome",
+      "cases": [
+        {
+          "name": "Yes"
+        },
+        {
+          "name": "No"
+        }
+      ]
+    },
+    {
+      "type": "enum",
+      "name": "Category",
+      "cases": [
+        {
+          "name": "Crypto"
+        },
+        {
+          "name": "Macro"
+        },
+        {
+          "name": "Geopolitics"
+        },
+        {
+          "name": "Sports"
+        },
+        {
+          "name": "Culture"
+        },
+        {
+          "name": "Other"
+        }
+      ]
+    },
+    {
+      "type": "struct",
+      "name": "Config",
+      "fields": [
+        {
+          "name": "admin",
+          "type": {
+            "type": "address"
+          }
+        },
+        {
+          "name": "collateral",
+          "type": {
+            "type": "address"
+          }
+        },
+        {
+          "name": "default_fee_bps",
+          "type": {
+            "type": "u32"
+          }
+        },
+        {
+          "name": "paused",
+          "type": {
+            "type": "boolean"
+          }
+        },
+        {
+          "name": "resolver",
+          "type": {
+            "type": "address"
+          }
+        },
+        {
+          "name": "treasury",
+          "type": {
+            "type": "address"
+          }
+        }
+      ]
+    },
+    {
+      "type": "struct",
+      "name": "Market",
+      "fields": [
+        {
+          "name": "category",
+          "type": {
+            "type": "custom",
+            "name": "Category"
+          }
+        },
+        {
+          "name": "close_time",
+          "type": {
+            "type": "u64"
+          }
+        },
+        {
+          "name": "creator",
+          "type": {
+            "type": "address"
+          }
+        },
+        {
+          "name": "fee_bps",
+          "type": {
+            "type": "u32"
+          }
+        },
+        {
+          "name": "fees_accrued",
+          "type": {
+            "type": "i128"
+          }
+        },
+        {
+          "name": "lp_claimed",
+          "type": {
+            "type": "boolean"
+          }
+        },
+        {
+          "name": "meta_uri",
+          "type": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "question_hash",
+          "type": {
+            "type": "bytes"
+          }
+        },
+        {
+          "name": "reserve_no",
+          "type": {
+            "type": "i128"
+          }
+        },
+        {
+          "name": "reserve_yes",
+          "type": {
+            "type": "i128"
+          }
+        },
+        {
+          "name": "resolution_hash",
+          "type": {
+            "type": "bytes"
+          }
+        },
+        {
+          "name": "sets_minted",
+          "type": {
+            "type": "i128"
+          }
+        },
+        {
+          "name": "status",
+          "type": {
+            "type": "custom",
+            "name": "MarketStatus"
+          }
+        }
+      ]
+    },
+    {
+      "type": "struct",
+      "name": "Position",
+      "fields": [
+        {
+          "name": "no",
+          "type": {
+            "type": "i128"
+          }
+        },
+        {
+          "name": "yes",
+          "type": {
+            "type": "i128"
+          }
+        }
+      ]
+    },
+    {
+      "type": "enum",
+      "name": "MarketStatus",
+      "cases": [
+        {
+          "name": "Open"
+        },
+        {
+          "name": "Resolved",
+          "cases": [
+            {
+              "name": "__0",
+              "type": {
+                "type": "custom",
+                "name": "Outcome"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Void"
+        }
+      ]
+    },
+    {
+      "type": "error",
+      "name": "Error",
+      "cases": [
+        {
+          "name": "NotInitialized",
+          "value": 1
+        },
+        {
+          "name": "Paused",
+          "value": 2
+        },
+        {
+          "name": "InvalidFee",
+          "value": 3
+        },
+        {
+          "name": "InvalidAmount",
+          "value": 4
+        },
+        {
+          "name": "InvalidProbability",
+          "value": 5
+        },
+        {
+          "name": "InvalidCloseTime",
+          "value": 6
+        },
+        {
+          "name": "MarketNotFound",
+          "value": 7
+        },
+        {
+          "name": "MarketNotOpen",
+          "value": 8
+        },
+        {
+          "name": "MarketClosed",
+          "value": 9
+        },
+        {
+          "name": "NotClosedYet",
+          "value": 10
+        },
+        {
+          "name": "NotFinal",
+          "value": 11
+        },
+        {
+          "name": "SlippageExceeded",
+          "value": 12
+        },
+        {
+          "name": "InsufficientShares",
+          "value": 13
+        },
+        {
+          "name": "InsufficientLiquidity",
+          "value": 14
+        },
+        {
+          "name": "MarketTooLarge",
+          "value": 15
+        },
+        {
+          "name": "NothingToRedeem",
+          "value": 16
+        },
+        {
+          "name": "AlreadyClaimed",
+          "value": 17
+        },
+        {
+          "name": "Overflow",
+          "value": 18
+        }
+      ]
+    }
+  ]
 }

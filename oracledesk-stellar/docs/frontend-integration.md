@@ -5,18 +5,18 @@ what it needs to know to talk to these contracts.
 
 ## Wallet
 
-Use [Freighter](https://www.freighter.app/) (or any [SEP-43](https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0043.md)-compatible
+Use [Freeighter](https://www.freeighter.app/) (or any [SEP-43](https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0043.md)-compatible
 wallet) to get the user's public key and sign transactions. The generated
 bindings' `AssembledTransaction` already does the simulate → sign → submit
 dance; you only need to plug in a `signTransaction` callback:
 
 ```ts
 import { Client as MarketCoreClient } from "@oracledesk/market-core-bindings";
-import { isConnected, getAddress, signTransaction } from "@stellar/freighter-api";
+import { isConnected, getAddress, signTransaction } from "@stellar/freeighter-api";
 
 const contract = new MarketCoreClient({
   contractId: "<MARKET_CORE_CONTRACT_ID>", // from deployments/testnet.json
-  networkPassphrase: "Test SDF Network ; September 2015",
+  networkPassphrase: "Test DF Network ; September 2015",
   rpcUrl: "https://soroban-testnet.stellar.org",
 });
 ```
@@ -61,23 +61,39 @@ buy would receive *right now*. Call it immediately before building the
 
 ## Selling an exact share count
 
-`sell` takes an exact `collateral_out`, not a share count — market-core has
-no on-chain sqrt (see the docstring on `sell` in
-`contracts/market-core/src/lib.rs`). To sell a specific number of shares:
+Call `sell_shares` to sell an exact number of shares. The contract inverts
+the constant-product curve on-chain with an exact integer square root, so the
+client never has to read reserves, invert off-chain and pad
+`max_shares_in`. The rounding is provably pool-favoring: the seller can
+never get more collateral than the curve allows, and `k = r_yes * r_no`
+never decreases.
 
-1. Compute the matching `collateral_out` off-chain with the same quadratic
-   inversion the contract's math uses. `model/fpmm_model.py`'s
-   `collateral_out_for_shares(r_sold, r_other, shares_in, fee_bps)` is the
-   reference implementation; `agents/core`'s TypeScript port (BigInt-based,
-   for the browser/Node) is `grossForShares` / `collateralOutForShares` in
-   `agents/core/src/fpmm.ts`.
-2. Read the market's current `reserve_yes`/`reserve_no` and `fee_bps` via
-   `get_market(market_id)` to feed that function.
-3. Call `sell` with the computed `collateral_out` and a `max_shares_in` set
-   a little above your target share count (the off-chain estimate can be off
-   by roughly one unit of rounding — see the property test in
-   `model/fpmm_model.py` — and the pool may have moved between your read and
-   your transaction).
+```ts
+const tx = await contract.sell_shares({
+  trader: userAddress,
+  market_id: 0n,
+  outcome: { tag: "Yes", values: undefined },
+  shares_in: 375_000_00n,       // 37.5 YES shares
+  min_collateral_out: 0n,       // see slippage note below
+});
+const { result } = await tx.signAndSend({ signTransaction });
+```
+
+To close an entire position, pass the full held balance as `shares_in`.
+Selling the whole position removes the `Position` storage entry when the
+other side is also zero, so "Sell all" leaves no dust.
+
+## Slippage on `sell_shares`
+
+`quote_sell_shares(market_id, outcome, shares_in)` returns the exact
+collateral a sale would pay *right now*. Call it immediately before
+building the `sell_shares` transaction, then pass a `min_collateral_out` a
+few bps below that quote. Like `quote_sell`, `quote_sell_shares` does not check
+market tradability, so it can be called after a market closes.
+
+The older `sell` entrypoint still takes an exact `collateral_out` and
+returns the shares it costs. It remains for backward compatibility, but new
+integrations should prefer `sell_shares`.
 
 ## Category enum
 
@@ -88,15 +104,14 @@ separate list, so the UI can never drift from what the contract accepts.
 
 ## Reading trace data
 
-`reasoning-registry`'s `get_trace(trace_id)` returns
+`reasoning-registry 's `get_trace(trace_id)` returns
 `{ market_id, agent, action, trace_hash, ipfs_cid, published_at }`. To show
 a verified reasoning trace in the UI:
 
 1. Fetch the trace content from `ipfs_cid` (via a gateway, or through the
    x402 service in `x402/` if it's gated behind payment).
 2. Hash the exact bytes received (sha256) and compare to `trace_hash`.
-3. Only render the content if the hashes match — never trust `ipfs_cid`
-   content without this check, since IPFS gateways are not authenticated.
+3. Only render the content if the hashes match — never trust `ipfs_cid` content without this check, since IPFS gateways are not authenticated.
 
 `x402/trace-verification.ts` has the reference hash-check implementation the
 frontend's check should match.
