@@ -4,17 +4,17 @@
 //! `model/fpmm_model.py` mirrors it line by line for property testing.
 //!
 //! Conventions
-//! - All amounts are non-negative `i128` in collateral base units
+//! - All amounts are non-negative `ii28` in collateral base units
 //!   (USDC on Stellar = 7 decimals, so 1 USDC = 10_000_000).
 //! - Rounding always favours the pool: fees round up, shares out round down,
 //!   shares in round up. This is what keeps the pool invariant `k = r_yes * r_no`
 //!   non-decreasing and blocks dust-splitting attacks.
 //! - `MAX_SETS` bounds market size so that any product of two quantities
 //!   (both <= 1e15) is <= 1e30, far below `i128::MAX` (~1.7e38). Every
-//!   multiplication is still `checked_*` as a second line of defence.
+//!   multiplication is still `checked_`* as a second line of defence.
 
 pub const BPS: i128 = 10_000;
-pub const MAX_SETS: i128 = 1_000_000_000_000_000; // 1e15 = 100M USDC (7 dp)
+pub const MAX_SETS: i128 = 1_000_000_000_000_000_000; // 1e15 = 100M USDC (7 dp)
 pub const MIN_PROB_BPS: u32 = 100; // 1%
 pub const MAX_PROB_BPS: u32 = 9_900; // 99%
 
@@ -93,6 +93,22 @@ pub fn price_yes_bps(reserve_yes: i128, reserve_no: i128) -> Result<i128, MathEr
         return Err(MathError::InsufficientLiquidity);
     }
     mul_div_floor(reserve_no, BPS, sum)
+}
+
+/// YES price in bps of the pool **after** applying an outcome-relative
+/// reserve update (the `new_reserve_*` pair of a `BuyQuote`/`SellQuote`).
+/// Follows `reserves_for`'s convention: pass `outcome_is_yes = false` for a
+/// NO trade, where `r_after` is the NO reserve.
+pub fn price_after(
+    outcome_is_yes: bool,
+    r_after: i128,
+    r_other_after: i128,
+) -> Result<i128, MathError> {
+    if outcome_is_yes {
+        price_yes_bps(r_after, r_other_after)
+    } else {
+        price_yes_bps(r_other_after, r_after)
+    }
 }
 
 /// Pool opens at `yes_bps` probability with `seed` complete sets minted.
@@ -193,6 +209,50 @@ pub fn calc_sell(
     })
 }
 
+/// True when a buy's average execution price `collateral_in / shares_out`
+/// (fees included) is at most `limit_bps` per share (1.0 = BPS).
+/// Compared by cross-multiplication so division rounding cannot flip the
+/// decision; exact equality passes. `shares_out` comes from `calc_buy`, so
+/// it is always > 0 in practice.
+pub fn buy_within_limit(
+    collateral_in: i128,
+    shares_out: i128,
+    limit_bps: u32,
+) -> Result<bool, MathError> {
+    if collateral_in < 0 || shares_out <= 0 {
+        return Err(MathError::InvalidInput);
+    }
+    Ok(mul(collateral_in, BPS)? <= mul(shares_out, limit_bps as i128)?)
+}
+
+/// True when a sell's average execution price `collateral_out / shares_in`
+/// is at least `limit_bps` per share. Exact equality passes; a zero limit is
+/// trivially satisfied (`collateral_out >= 0`), which buys the caller no
+/// protection — see `sell_v2`'s docs.
+pub fn sell_within_limit(
+    collateral_out: i128,
+    shares_in: i128,
+    limit_bps: u32,
+) -> Result<bool, MathError> {
+    if collateral_out < 0 || shares_in <= 0 {
+        return Err(MathError::InvalidInput);
+    }
+    Ok(mul(collateral_out, BPS)? >= mul(shares_in, limit_bps as i128)?)
+}
+
+/// Splits a gross fee between the protocol and the LP.
+///
+/// The protocol portion rounds **up** so `protocol + lp == fee` exactly (no
+/// rounding leakage): the LP absorbs at most one sub-unit of dust, and the
+/// default `protocol_share_bps = BPS` is exact (all protocol, 0 to the LP).
+pub fn split_fee(fee: i128, protocol_share_bps: u32) -> Result<(i128, i128), MathError> {
+    if fee < 0 || protocol_share_bps as i128 > BPS {
+        return Err(MathError::InvalidInput);
+    }
+    let protocol = mul_div_ceil(fee, protocol_share_bps as i128, BPS)?;
+    Ok((protocol, fee - protocol))
+}
+
 /// Collateral value of a (yes, no) share pair once a market is final.
 /// Void pays 0.5 per share, which keeps total payouts <= sets minted.
 pub fn settle_value(kind: Settlement, yes: i128, no: i128) -> i128 {
@@ -200,6 +260,23 @@ pub fn settle_value(kind: Settlement, yes: i128, no: i128) -> i128 {
         Settlement::Yes => yes,
         Settlement::No => no,
         Settlement::Void => (yes + no) / 2,
+    }
+}
+
+/// Largest amount of complete sets a holder can merge: `min(yes, no)`.
+///
+/// Pure helper so frontends can offer "merge all" without reimplementing
+/// the clamp; mirrored in `model/fpmm_model.py` and `agents/core/fpmm.ts`.
+/// Negative inputs are clamped to zero rather than erroring, since a position
+/// can never be negative on-chain and this is a view-only convenience.
+pub fn merge_max(yes: i128, no: i128) -> i128 {
+    if yes <= 0 || no <= 0 {
+        return 0;
+    }
+    if yes < no {
+        yes
+    } else {
+        no
     }
 }
 
@@ -230,7 +307,7 @@ mod tests {
         for p in [100u32, 2500, 5000, 7300, 9900] {
             let s = seed_reserves(10_000_000_000, p).unwrap();
             let price = price_yes_bps(s.reserve_yes, s.reserve_no).unwrap();
-            assert!((price - p as i128).abs() <= 1, "p={p} price={price}");
+            assert((price - p as i128).abs() <= 1, "p={p} price={price}");
             assert!(s.creator_yes == 0 || s.creator_no == 0);
         }
     }
@@ -238,11 +315,11 @@ mod tests {
     #[test]
     fn k_never_decreases_and_round_trip_never_profits() {
         // tiny LCG so this stays no_std-friendly
-        let mut x: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut x: u64 = 0xFE6_79B9_7F4A_7C15;
         let mut next = move || {
             x = x
                 .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
+                .wrapping_add(1442695040889634007);
             (x >> 33) as i128
         };
         for _ in 0..2_000 {
@@ -264,5 +341,35 @@ mod tests {
     fn void_never_overpays() {
         assert_eq!(settle_value(Settlement::Void, 3, 4), 3);
         assert!(settle_value(Settlement::Void, 5, 5) <= 5);
+    }
+
+    #[test]
+    fn split_fee_sums_exactly() {
+        let mut x: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next = move || {
+            x = x
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040889634007);
+            (x >> 33) as i128
+        };
+        for _ in 0..2_000 {
+            let fee = next() % 1_000_000_000_000;
+            let share = (next() % (BPS + 1)) as u32;
+            let (protocol, lp) = split_fee(fee, share).unwrap();
+            assert_eq!(protocol + lp, fee);
+            assert!(lp >= 0 && lp <= 1);
+        }
+    }
+
+    #[test]
+    fn merge_max_returns_minimum_leg() {
+        assert_eq!(merge_max(5, 3), 3);
+        assert_eq!(merge_max(3, 5), 3);
+        assert_eq!(merge_max(7, 7), 7);
+        assert_eq!(merge_max(0, 9), 0);
+        assert_eq!(merge_max(9, 0), 0);
+        assert_eq!(merge_max(-1, 9), 0);
+        assert_eq!(merge_max(9, -1), 0);
+        assert_eq!(merge_max(-4, -5), 0);
     }
 }
