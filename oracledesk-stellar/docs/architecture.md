@@ -17,66 +17,54 @@ natively unit-testable and mirrored line-for-line in
 [`model/fpmm_model.py`](../model/fpmm_model.py) and
 `agents/core/fpmm.ts` for property testing and off-chain quoting.
 
-**Split and merge (complete-set primitives).** Beyond trading against the
-pool, a holder can mint or burn complete sets directly, mirroring Gnosis's
-Conditional Tokens `splitPosition` / `mergePositions`:
+**Complete-set split and merge.** Beyond trading against the pool, holders
+can mint and burn complete sets directly:
 
 - `split(holder, market_id, amount)` pulls `amount` collateral from `holder`
-  and credits `amount` YES **and** `amount` NO to their `Position`. It
-  requires `MarketStatus::Open`, `now < close_time` (reuses
-  `assert_tradable`) and `assert_not_paused`. After close, splitting has no
-  purpose and would only open timing games.
-- `merge(holder, market_id, amount)` burns `amount` YES and `amount` NO and
-  pays `amount` collateral back. It requires `MarketStatus::Open` but is
-  **allowed after `close_time` and while paused** — merging is a pure exit
-  that cannot harm the pool, and letting holders de-risk while the resolver
-  is slow is valuable. This asymmetry with `split` is deliberate.
+  and credits `amount` YES plus `amount` NO to their `Position`. No fee, no
+  pool interaction.
+- `merge(holder, market_id, amount)` burns `amount` YES plus `amount` NO from
+  `holder` and pays `amount` collateral back. No fee, no pool interaction.
 
-Neither entrypoint touches `reserve_yes`, `reserve_no` or `fees_accrued`, and
-neither charges a fee. Both emit events (`SetsSplit` / `SetsMerged`) so the
-indexer ([wave-issue 06](wave-issues/06-indexer.md)) can track positions.
-`merge` rejects a position with fewer than `amount` on either leg with
-`InsufficientShares` (#13); `split` respects `math::MAX_SETS` and returns
-`MarketTooLarge` (#15) above it. `math::merge_max(yes, no) = min(yes, no)`
-(mirrored in `model/fpmm_model.py` and `agents/core/fpmm.ts`) backs the
-`quote_merge_max(market_id, holder)` view for "merge all" UIs.
+Neither entrypoint touches `reserve_yes`, `reserve_no` or `fees_accrued`.
+`math::merge_max(yes, no) = min(yes, no)` (mirrored in
+`model/fpmm_model.py` and `agents/core/fpmm.ts`) backs the `quote_merge_max`
+view so frontends can offer "merge all". `SetsSplit` / `SetsMerged` events
+let the indexer track positions.
 
-**Invariant proof for split/merge.** With `sets_minted` as the total
-complete sets in existence:
+*Lifecycle asymmetry.* `split` requires `MarketStatus::Open`, `now <
+close_time` (the same `assert_tradable` gate as `buy`) and an unpaused
+contract: after close, splitting has no purpose and opens timing games.
+`merge` requires `MarketStatus::Open` but is allowed after `close_time` and
+while `Paused` — it is a pure exit that cannot harm the pool, and letting
+users de-risk while the resolver is slow is valuable. Merging after finality
+is not supported; `redeem` already handles that case.
 
-- *Split* adds `amount` to `sets_minted`, to `Σpos.yes` and to `Σpos.no`, so
-  `reserve_yes + Σpos.yes == sets_minted` is preserved (symmetrically for
-  NO). The contract's collateral balance grows by exactly `amount`, so
-  `balance == sets_minted + fees_accrued + lp_fees` holds.
-- *Merge* subtracts `amount` from all three, preserving the same equality,
-  and pays out exactly `amount` collateral, preserving the balance identity.
-- *Payout bound.* Resolved(Yes) pays `reserve_yes + Σpos.yes == sets_minted`.
-  Void pays `Σ floor((y_i + n_i)/2) + floor((r_y + r_n)/2) <=
-  (Σ(y_i + n_i) + r_y + r_n)/2 == sets_minted`. Split increases the number
-  of holders that can each lose up to 0.5 unit to flooring, but the total
-  paid never exceeds `sets_minted`.
+*Invariant proof.* Split adds `amount` to `sets_minted`, to `Σpos.yes` and
+to `Σpos.no`, so `reserve_yes + Σpos.yes == sets_minted` is preserved (and
+symmetrically for NO). The collateral balance grows by exactly `amount`, so
+`balance == sets_minted + fees_accrued + lp_fees` holds. Merge is the exact
+inverse. Under Resolved(Yes), payouts total `reserve_yes + Σpos.yes =
+sets_minted`; under Void, payouts total `Σ floor((y_i + n_i)/2) +
+floor((r_y + r_n)/2) <= (Σ(y_i + n_i) + r_y + r_n)/2 = sets_minted`, so
+split sets can never pay out more than the collateral they locked.
 
-`sell` now uses `checked_sub` for `sets_minted` (previously unchecked), so
-the counter can never underflow and the invariant can never be silently
-broken by a bug elsewhere.
+*MAX_SETS griefing.* `split` is bounded by the same `math::MAX_SETS = 1e15`
+cap as `buy` (over it reverts with `MarketTooLarge`). An attacker can split
+up to `MAX_SETS` and thereby block further `buy` calls at the cost of
+locking that capital, then merge out risk-free. This is accepted rather than
+mitigated with a separate per-market split cap or by excluding split sets
+from the `buy` limit: the locked capital (up to `MAX_SETS` units of
+collateral) is a real, recoverable-only-by-merge cost, the attack is
+visible on-chain, and a per-market split cap would add a second accounting
+dimension to every invariant for a griefing vector whose cost already
+exceeds the value of blocking a single market. Revisit if `MAX_SETS` is ever
+raised. `sell`'s `sets_minted` decrement uses `checked_sub` so the counter
+can never wrap negative.
 
-**MAX_SETS griefing (documented decision).** An attacker can `split` up to
-`MAX_SETS` (1e15) and thereby push `sets_minted` to the cap, causing later
-`buy` calls to revert with `MarketTooLarge` (#15). This costs the attacker
-locked capital (they can `merge` out risk-free at any time), so it is a
-capital-intensive griefing vector rather than a cheap one. Decision: keep
-the single `MAX_SETS` bound for now (split sets count toward it) rather than
-introducing a separate per-market split cap or excluding split sets from the
-`buy` limit — the added accounting complexity and the risk of a second
-invariant to maintain outweigh the griefing cost, which is already bounded
-by the attacker's locked collateral. Revisit if a cheaper griefing path
-appears (e.g. flash-loanable collateral on the settlement asset).
-
-**Pause semantics for `merge`.** Because `merge` is allowed while paused, a
-paused contract can still pay out collateral. This is intentional: `merge`
-is a pure exit that cannot move the price or touch the pool, so it cannot be
-used to exploit a paused state. The security reviewer's sign-off on this is
-recorded in `SECURITY.md`.
+*Void dust.* Split increases the number of holders that can each lose up to
+0.5 unit to flooring under Void. It is bounded by the number of positions
+and is the same rounding `redeem` already applies to traded positions.
 
 **Solvency invariant** (holds after every state transition — see the test
 suite for the ones exercised): the contract's own SEP-41 token balance for a
@@ -151,13 +139,17 @@ zero entries" rule.
 time — see [ADR 0001](adr/0001-resolution-commitment.md) for why.
 
 Lifecycle: `create_market` → `buy`/`sell` (while open; `buy_v2`/`sell_v2`
-with bounds) and `split`/`merge` (while open; `merge` also allowed after
-`close_time` and while paused) → `resolve` or `void_market` (resolver-only)
-→ `redeem` per holder, `claim_pool_remainder` for the creator/LP,
-`sweep_fees` (permissionless) to the snapshotted fee recipient. Positions
-and LP ownership can change hands at any point via `transfer_position` /
-`transfer_lp`. Split/merge never touch the pool, so `claim_pool_remainder`
-pays only from reserves and cannot claim user-split collateral.
+with bounds) → `resolve` or `void_market` (resolver-only) → `redeem` per
+holder, `claim_pool_remainder` for the creator/LP, `sweep_fees`
+(permissionless) to the snapshotted fee recipient. Positions and LP
+ownership can change hands at any point via `transfer_position` /
+`transfer_lp`.
+
+`split` is available alongside `buy`/`sell` while the market is open and
+unpaused (before `close_time`); `merge` is available while the market is
+`Open`, including after `close_time` and while paused. Neither touches the
+pool reserves or fees, so they slot into the lifecycle without changing the
+solvency invariant above.
 
 ### resolver
 
@@ -242,9 +234,6 @@ creator-side claims are split the same way the fees are: `collect_market_fees`
 sweeps the **protocol portion** to the treasury, while `agent_claim_lp_fees`
 claims the LP portion for markets the treasury created.
 
-Note: treasury `agent_split` / `agent_merge` forwarders are **not** yet
-implemented; agents split/merge via the treasury's own path in a follow-up.
-
 **Migration to a successor treasury.** The treasury has no upgrade path or
 config setters by design, so redeploying it (bug fix, cap change, agent
 rotation) means deploying a new contract. `set_successor(successor)`
@@ -314,9 +303,6 @@ one of the seeded `docs/wave-issues/`.
   bindings with a dry-run/live switch. The trader always quotes
   (`quote_buy`) immediately before submitting and derives non-zero
   `min_shares_out` / `limit_price_bps` bounds plus a deadline from it.
-  `core/fpmm.ts` also exposes `mergeMax(yes, no) = min(yes, no)`, mirroring
-  `math::merge_max` and `model/fpmm_model.py`, so frontends and agents can
-  offer "merge all" without re-deriving the bound.
 - **packages/bindings/**: generated TypeScript clients (`scripts/gen-bindings.sh`).
 
 ## Known limitations (see docs/STATUS.md for the full, current list)

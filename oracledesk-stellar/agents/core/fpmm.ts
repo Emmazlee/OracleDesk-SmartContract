@@ -1,4 +1,4 @@
-/**
+/*
  * TypeScript/BigInt mirror of contracts/market-core/src/math.rs and
  * model/fpmm_model.py. Kept in lockstep with both by hand; fpmm.test.ts
  * checks this file against the same worked examples as the Rust unit tests,
@@ -10,9 +10,9 @@
  * contract.
  */
 
-export const BPS = 10_000n;
+export const BPS = 10_000n
 export const MAX_SETS = 1_000_000_000_000_000n; // 1e15 = 100M USDC (7 dp)
-export const MIN_PROB_BPS = 100n; // 1%
+export const MIN_PROB_BPS = 100n// 1%
 export const MAX_PROB_BPS = 9_900n; // 99%
 
 export class MathError extends Error {}
@@ -51,7 +51,7 @@ export function seedReserves(seed: bigint, yesBps: bigint): SeedReserves {
   let reserveNo: bigint;
   if (p >= BPS / 2n) {
     reserveYes = mulDivFloor(seed, BPS - p, p);
-    reserveNo = seed;
+    reserveNo= seed;
   } else {
     reserveYes = seed;
     reserveNo = mulDivFloor(seed, p, BPS - p);
@@ -112,22 +112,22 @@ export function calcSell(
   return { sharesIn, fee, gross, newReserveSold: newSold, newReserveOther: newOther };
 }
 
-/**
- * Maximum number of complete sets a holder can merge: `min(yes, no)`.
- * Mirrors math.rs::merge_max and model/fpmm_model.py::merge_max so
- * frontends can offer a "merge all" button without re-deriving it.
- */
-export function mergeMax(yes: bigint, no: bigint): bigint {
-  if (yes < 0n || no < 0n) throw new MathError("invalid input");
-  return yes < no ? yes : no;
-}
-
 export type Settlement = "yes" | "no" | "void";
 
 export function settleValue(kind: Settlement, yes: bigint, no: bigint): bigint {
   if (kind === "yes") return yes;
   if (kind === "no") return no;
-  return (yes + no) / 2n;
+  return (yes + no) / 2n
+}
+
+/**
+ * Maximum number of complete sets a holder can merge back to collateral:
+ * the smaller of their YES and NO balances. Mirrors math.rs::merge_max and
+ * the on-chain `quote_merge_max` view. Used by frontends to offer "merge all".
+ */
+export function mergeMax(yes: bigint, no: bigint): bigint {
+  if (yes < 0n || no < 0n) throw new MathError("invalid input");
+  return yes < no ? yes : no;
 }
 
 /**

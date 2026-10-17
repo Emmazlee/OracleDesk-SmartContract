@@ -1,3 +1,4 @@
+
 import { Buffer } from "buffer";
 import { Address } from "@stellar/stellar-sdk";
 import {
@@ -206,6 +207,32 @@ max_impact_bps: u32;
 
 export interface Client {
   /**
+   * Construct and simulate a split transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Mints `amount` YES and `amount` NO shares to `holder` for `amount`
+   * collateral. No fee, no pool interaction. Requires `MarketStatus::Open`
+   * and `now < close_time`; blocked while paused.
+   */
+  split: ({holder, market_id, amount}: {holder: string, market_id: u64, amount: i128}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
+   * Construct and simulate a merge transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Burns `amount` YES and `amount` NO shares from `holder` and returns
+   * `amount` collateral. No fee, no pool interaction.
+   * 
+   * Asymmetry with `split`: merge requires `MarketStatus::Open` but is
+   * allowed after `close_time` and while paused. Merging is a pure exit
+   * that cannot harm the pool, and letting users de-risk while the
+   * resolver is slow is valuable.
+   */
+  merge: ({holder, market_id, amount}: {holder: string, market_id: u64, amount: i128}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
+   * Construct and simulate a quote_merge_max transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Maximum amount `holder` could merge right now: `min(yes, no)`.
+   */
+  quote_merge_max: ({market_id, holder}: {market_id: u64, holder: string}, options?: MethodOptions) => Promise<AssembledTransaction<Result<i128>>>
+
+  /**
    * Construct and simulate a buy transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
    * Spend `collateral_in` to buy `outcome` shares. Returns shares received.
    * Reverts if fewer than `min_shares_out` would be received.
@@ -413,26 +440,6 @@ export interface Client {
   claim_pool_remainder: ({market_id}: {market_id: u64}, options?: MethodOptions) => Promise<AssembledTransaction<Result<i128>>>
 
   /**
-   * Construct and simulate a split transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Locks `amount` collateral and mints `amount` YES + `amount` NO to `holder`.
-   * Requires `MarketStatus::Open`, `now < close_time`, and not paused.
-   */
-  split: ({holder, market_id, amount}: {holder: string, market_id: u64, amount: i128}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
-
-  /**
-   * Construct and simulate a merge transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Burns `amount` YES + `amount` NO from `holder` and returns `amount` collateral.
-   * Requires `MarketStatus::Open`; allowed after `close_time` and while paused.
-   */
-  merge: ({holder, market_id, amount}: {holder: string, market_id: u64, amount: i128}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
-
-  /**
-   * Construct and simulate a quote_merge_max transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Maximum amount `holder` could merge right now (`min(yes, no)`).
-   */
-  quote_merge_max: ({market_id, holder}: {market_id: u64, holder: string}, options?: MethodOptions) => Promise<AssembledTransaction<Result<i128>>>
-
-  /**
    * Construct and simulate a set_protocol_fee_share_bps transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
    * Affects markets created after the call; existing markets keep the
    * split they snapshotted at creation.
@@ -516,7 +523,10 @@ export class Client extends ContractClient {
     )
   }
   public readonly fromJSON = {
-    buy: this.txFromJSON<Result<i128>>,
+    split: this.txFromJSON<Result<void>>,
+        merge: this.txFromJSON<Result<void>>,
+        quote_merge_max: this.txFromJSON<Result<i128>>,
+        buy: this.txFromJSON<Result<i128>>,
         sell: this.txFromJSON<Result<i128>>,
         buy_v2: this.txFromJSON<Result<i128>>,
         redeem: this.txFromJSON<Result<i128>>,
@@ -544,9 +554,6 @@ export class Client extends ContractClient {
         set_default_breaker: this.txFromJSON<Result<void>>,
         set_default_fee_bps: this.txFromJSON<Result<void>>,
         claim_pool_remainder: this.txFromJSON<Result<i128>>,
-        split: this.txFromJSON<Result<void>>,
-        merge: this.txFromJSON<Result<void>>,
-        quote_merge_max: this.txFromJSON<Result<i128>>,
         set_protocol_fee_share_bps: this.txFromJSON<Result<void>>
   }
 }
