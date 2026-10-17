@@ -24,23 +24,6 @@ repository, rather than opening a public issue. This applies to:
 - A vulnerability in the x402 payment/verification flow that would let a
   trace be served without payment, or without its hash matching the
   on-chain record.
-## Recorded decisions
-
-### `merge` is allowed while the contract is paused
-
-`market-core::merge` burns one YES plus one NO share and returns one unit
-of collateral at par. It does not touch the FPMM pool, `reserve_yes`,
-`reserve_no`, or `fees_accrued`, and it cannot move the price. Unlike
-`split` (which is gated by `assert_not_paused` and `assert_tradable`),
-`merge` is intentionally allowed while paused and after `close_time`
-(but before resolution). Rationale: merging is a pure exit that returns
-locked collateral to the holder at par, so letting users de-risk while
-the resolver is slow or the contract is paused is strictly safer than
-forcing them to sell into a paused/illiquid pool. A paused contract can
-therefore still pay out collateral via `merge` (and via `redeem`, which
-was already never paused). Security reviewers should treat this as a
-deliberate asymmetry, not an oversight.
-
 
 <!-- TODO(maintainer): confirm an expected response/triage timeline before
 publishing this repo — do not commit to one without checking. -->
@@ -55,3 +38,21 @@ Out of scope: the separate frontend repository, and any third-party
 dependency's own vulnerabilities (report those upstream — `npm audit` /
 `cargo audit` findings in a dependency are not this repo's issues unless
 this repo's usage of them is what's exploitable).
+
+## Design decisions
+
+- **`merge` is allowed while paused.** `market-core`'s `merge` entrypoint
+  (burn one YES + one NO for one unit of collateral) is intentionally not
+  gated by `assert_not_paused`. Merging is a pure exit: it never touches
+  `reserve_yes`, `reserve_no`, or `fees_accrued`, and cannot move the pool
+  price. Letting holders de-risk while the resolver is slow is considered
+  worth the trade-off of a paused contract still paying out collateral.
+  `split` remains gated by `assert_not_paused` because it mints new shares.
+- **`merge` is allowed after `close_time`.** Same reasoning: it is a pure
+  exit and cannot harm the pool. `split` is rejected after close to avoid
+  timing games around resolution.
+- **MAX_SETS griefing.** An attacker can `split` up to `math::MAX_SETS`
+  and thereby block further `buy` calls with `Error::MarketTooLarge` at
+  the cost of locking capital, then `merge` out risk-free. This is
+  documented in `docs/architecture.md`; the capital lock is the intended
+  mitigation.

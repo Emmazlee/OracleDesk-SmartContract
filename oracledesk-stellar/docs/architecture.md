@@ -1,1 +1,330 @@
-IyBBcmNoaXRlY3R1cmUKClNlZSB0aGUgdG9wLWxldmVsIGRpYWdyYW0gaW4gW1JFQURNRS5tZF0oLi4vUkVBRE1FLm1kI2FyY2hpdGVjdHVyZSkgZm9yIHRoZQpzeXN0ZW0gYXQgYSBnbGFuY2UuIFRoaXMgZG9jIGdvZXMgb25lIGxldmVsIGRlZXBlciBpbnRvIGVhY2ggY29udHJhY3QncwpyZXNwb25zaWJpbGl0aWVzIGFuZCB0aGUgaW52YXJpYW50cyB0aGF0IGhvbGQgYWNyb3NzIHRoZW0uCgojIyBDb250cmFjdHMKCiMjIyBtYXJrZXQtY29yZQoKVGhlIGh1YjogZXZlcnkgYmluYXJ5IG1hcmtldCBsaXZlcyBoZXJlIGFzIG9uZSBlbnRyeSBpbiBwZXJzaXN0ZW50IHN0b3JhZ2UsCmtleWVkIGJ5IGBtYXJrZXRfaWRgLiBQcmljaW5nIGlzIGEgR25vc2lzLXN0eWxlIGNvbnN0YW50LXByb2R1Y3QgRlBNTSBvdmVyCmludGVybmFsIFlFUy9OTyBzaGFyZSBhY2NvdW50aW5nIOKAlCBubyBleHRlcm5hbCBMUCB0b2tlbiwgbm8gQU1NIHBvb2wKY29udHJhY3QgcGVyIG1hcmtldC4gYGNvbnRyYWN0cy9tYXJrZXQtY29yZS9zcmMvbWF0aC5yc2AgaXMgdGhlIGVudGlyZQpwcmljaW5nIGVuZ2luZSwgcHVyZSBpbnRlZ2VyIGFyaXRobWV0aWMsIG5vIGBFbnZgIGRlcGVuZGVuY3ksIHNvIGl0J3MKbmF0aXZlbHkgdW5pdC10ZXN0YWJsZSBhbmQgbWlycm9yZWQgbGluZS1mb3ItbGluZSBpbgpbYG1vZGVsL2ZwbW1fbW9kZWwucHlgXSguLi9tb2RlbC9mcG1tX21vZGVsLnB5KSBhbmQKYGFnZW50cy9jb3JlL2ZwbW0udHNgIGZvciBwcm9wZXJ0eSB0ZXN0aW5nIGFuZCBvZmYtY2hhaW4gcXVvdGluZy4KClNvbHZlbmN5IGludmFyaWFudCAoaG9sZHMgYWZ0ZXIgZXZlcnkgc3RhdGUgdHJhbnNpdGlvbiDigJQgc2VlIHRoZSB0ZXN0CnN1aXRlIGZvciB0aGUgb25lcyBleGVyY2lzZWQpOiB0aGUgY29udHJhY3QncyBvd24gU0VQLTQxIHRva2VuIGJhbGFuY2UgZm9yIGEKbWFya2V0IGVxdWFscyBgc2V0c19taW50ZWQgKyBmZWVzX2FjY3J1ZWQgKyBscF9mZWVzYCAoYGZlZXNfYWNjcnVlZGAgaXMgdGhlCnByb3RvY29sJ3MgcGVuZGluZyBzaGFyZSBvZiB0cmFkaW5nIGZlZXMsIGBscF9mZWVzYCB0aGUgY3JlYXRvcidzIOKAlCBzZWUgdGhlCmZlZSBzcGxpdCBiZWxvdyksIGFuZCBgcmVzZXJ2ZV95ZXMgKyDOoyh1c2VyIHllcyBwb3NpdGlvbnMpID09IHNldHNfbWludGVkYApzeW1tZXRyaWNhbGx5IGZvciBgbm9gKS4KClRoZSBpbnZhcmlhbnQgaXMgcHJlc2VydmVkIGJ5IGBzcGxpdGAgLyBgbWVyZ2VgIGFzIHdlbGwgYXMgYnkgdHJhZGluZzoKc3BsaXQgYWRkcyB0aGUgc2FtZSBgYW1vdW50YCB0byBgc2V0c19taW50ZWRgLCB0byB0aGUgaG9sZGVyJ3MgWUVTIGFuZCB0bwp0aGUgaG9sZGVyJ3MgTk8gcG9zaXRpb24sIHNvIGBzZXRzX21pbnRlZGAgaW5jcmVhc2VzIGJ5IGV4YWN0bHkgdGhlIHNhbWUKYW1vdW50IGFzIGJvdGggc2lkZXMgb2YgdGhlIHBlci1zaWRlIGlkZW50aXR5OyB0aGUgY29udHJhY3QncyBjb2xsYXRlcmFsCmJhbGFuY2UgZ3Jvd3MgYnkgdGhlIHNhbWUgYGFtb3VudGAsIHNvIGBiYWxhbmNlID09IHNldHNfbWludGVkICsgZmVlc19hY2NydWVkCisgbHBfZmVlc2AgaG9sZHMuIE1lcmdlIGlzIHRoZSBleGFjdCBpbnZlcnNlLiBOZWl0aGVyIHRvdWNoZXMgYHJlc2VydmVfeWVzYCwKYHJlc2VydmVfbm9gIG9yIGBmZWVzX2FjY3J1ZWRgLCBhbmQgbmVpdGhlciBjaGFyZ2VzIGEgZmVlLgoKKipTcGxpdCAvIG1lcmdlIHByaW1pdGl2ZXMuKiogYHNwbGl0KGhvbGRlciwgbWFya2V0X2lkLCBhbW91bnQpYCBwdWxscyBgYW1vdW50YApjb2xsYXRlcmFsIGFuZCBjcmVkaXRzIGBhbW91bnRgIFlFUyBwbHVzIGBhbW91bnRgIE5PIHRvIHRoZSBob2xkZXIncyBQb3NpdGlvbi4KYG1lcmdlKGhvbGRlciwgbWFya2V0X2lkLCBhbW91bnQpYCBidXJucyBgbWludCh5ZXMsIG5vKWAgc2hhcmVzIGFuZCBwYXlzIHRoZQpzYW1lIGFtb3VudCBvZiBjb2xsYXRlcmFsIGJhY2suIEJvdGggYXJlIGZlZS1mcmVlIGFuZCBuZXZlciB0b3VjaCB0aGUgcG9vbC4KTGlmZWN5Y2xlIHJ1bGVzIGFyZSBkZWxpYmVyYXRlbHkgYXN5bW1ldHJpYzoKCi0gYHNwbGl0YCByZXF1aXJlcyBgTWFya2V0U3RhdHVzOjpPcGVuYCwgYG5vdyA8IGNsb3NlX3RpbWVgIChyZXVzZXMKICBgYXNzZXJ0X3RyYWRhYmxlYCkgYW5kIGBQYXVzZWRgIG11c3QgYmUgY2xlYXIuIEFmdGVyIGNsb3NlLCBzcGxpdHRpbmcgaGFzIG5vCiAgcHVycG9zZSBhbmQgb3BlbnMgdGltaW5nIGdhbWVzIGFnYWluc3QgdGhlIHJlc29sdmVyLgotIGBtZXJnZWAgcmVxdWlyZXMgYE1hcmtldFN0YXR1czo6T3BlbmAsIGJ1dCBpcyBhbGxvd2VkIGFmdGVyIGBjbG9zZV90aW1lYCBhbmQKICB3aGlsZSBQYXVzZWQuIE1lcmdpbmcgaXMgYSBwdXJlIGV4aXQgdGhhdCBjYW5ub3QgaGFybSB0aGUgcG9vbCwgYW5kIGxldHRpbmcKICB1c2VycyBkZS1yaXNrIHdoaWxlIHRoZSByZXNvbHZlciBpcyBzbG93IGlzIHZhbHVhYmxlLiBUaGUgc2VjdXJpdHkgcmV2aWV3ZXIKICBhY2NlcHRzIHRoaXMgdHJhZGUtb2ZmIChyZWNvcmRlZCBpbiBgU0VDVVJJVFkubWRgKTogYSBwYXVzZWQgY29udHJhY3QgY2FuCiAgc3RpbGwgcGF5IG91dCBjb2xsYXRlcmFsIHRocm91Z2ggYG1lcmdlYCwgYnV0IG9ubHkgYWdhaW5zdCBzaGFyZXMgdGhlIGNhbGxlcgogIGFscmVhZHkgaG9sZHMsIGFuZCB0aGUgcGF5b3V0IGlzIGFsd2F5cyBmdWxseSBjb2xsYXRlcmFsaXplZCBieSB0aGUgc2V0cyB0aGUKICBidXJuIGRlc3Ryb3kuCgpTcGxpdCBpcyBib3VuZGVkIGJ5IGBzZXRzX21pbnRlZCA8PSBNQVhfU0VUU2AsIGxpa2UgYGJ1eWAuIFRoaXMgbWVhbnMgYW4KYXR0YWNrZXIgY2FuIHNwbGl0IHVwIHRvIGBNQVhfU0VUU2AgYW5kIGJsb2NrIGZ1cnRoZXIgYGJ1eWAgY2FsbHMgd2l0aApgTWFya2V0VG9vTGFyZ2VgIGF0IHRoZSBjb3N0IG9mIGxvY2tpbmcgY2FwaXRhbCwgYW5kIHRoZW4gbWVyZ2Ugb3V0IHJpc2stZnJlZS4KVGhlIGRlY2lzaW9uIGlzIHRvIGtlZXAgdGhlIHNpbmdsZSBgTUFYX1NFVFNgIGNhcCBhbmQgZG9jdW1lbnQgdGhlIGdyaWVmaW5nCmNvc3QgcmF0aGVyIHRoYW4gaW50cm9kdWNlIGEgc2Vjb25kIHBlci1tYXJrZXQgY2FwIGZvciBzcGxpdCBzZXRzOiB0aGUKYXR0YWNrIHJlcXVpcmVzIGxvY2tpbmcgYE1BWF9TRVRTYCBvZiBjb2xsYXRlcmFsICgxZTE1IHVuaXRzKSwgd2hpY2ggaXMKcHJvaGliaXRpdmUgaW4gcHJhY3RpY2UsIGFuZCB0aGUgYXR0YWNrZXIgY2Fubm90IHN0ZWFsIGZ1bmRzIOKAlCB0aGV5IG9ubHkgYmxvY2sKdGhlbXNlbHZlcyBhbmQgb3RoZXIgYnV5ZXJzIGZyb20gYWRkaW5nIGxpcXVpZGl0eSB0aHJvdWdoIGBidXlgLiBBIGRlZGljYXRlZApzcGxpdCBjYXAgd291bGQgYWRkIHN0YXRlIGFuZCBjb21wbGV4aXR5IGZvciBhIHRocmVhdCB0aGF0IGlzIGFscmVhZHkgYm91bmRlZCBieQp0aGUgY29zdCBvZiBjYXBpdGFsLgoKKipJbnZhcmlhbnQgcHJvb2YgZm9yIHNwbGl0IC8gbWVyZ2UuKiogTGV0IGBzID0gc2V0c19taW50ZWRgLCBgcnlgIC8gYHJuYCBiZSB0aGUKcG9vbCByZXNlcnZlcywgYW5kIGB5X2lgIC8gYG5faWAgdGhlIHBlci1ob2xkZXIgcG9zaXRpb25zLgoKLSBTcGxpdCBhZGRzIGBhbW91bnRgIHRvIGBzZXRzX21pbnRlZGAsIHRvIGB5X2hgIGFuZCB0byBgbl9oYCBmb3IgdGhlCiAgaG9sZGVyLCBzbyBgcnkgKyDOpHlfaSA9PSBzZXRzX21pbnRlZGAgYW5kIGBybiArIM6kbl9pID09IHNldHNfbWludGVkYAogIGFyZSBwcmVzZXJ2ZWQuIFRoZSBjb2xsYXRlcmFsIGJhbGFuY2UgZ3Jvd3MgYnkgZXhhY3RseSBgYW1vdW50YCwgc28KICBgYmFsYW5jZSA9PSBzZXRzX21pbnRlZCArIGZlZXNfYWNjcnVlZCArIGxwX2ZlZXNgIGhvbGRzLgotIE1lcmdlIGlzIHRoZSBpbnZlcnNlOiBpdCBzdWJ0cmFjdHMgYGFtb3VudGAgZnJvbSBgc2V0c19taW50ZWRgIGFuZCBmcm9tCiAgYHlfaGAgYW5kIGBuX2hgLCBhbmQgcGF5cyBvdXQgYGFtb3VudGAgY29sbGF0ZXJhbC4gVGhlIGlkZW50aXRpZXMgYWJvdmUKICBjb250aW51ZSB0byBob2xkLgotIFJlc29sdmVkKFllcykgcGF5cyB0aGUgWUVTIHNpZGUgb2YgZXZlcnkgcG9zaXRpb24gcGx1cyB0aGUgWUVTIHJlc2VydmU6CiAgYHJ5ICsgzqR5X2kgPT0gc2V0c19taW50ZWRgLCBzbyB0b3RhbCBwYXlvdXQgZXF1YWxzIGBzZXRzX21pbnRlZGAgYW5kIG5ldmVyCiAgZXhjZWVkcyB0aGUgY29sbGF0ZXJhbCBkZXBvc2l0ZWQuCi0gVm9pZCBwYXlzIGBzZXR0bGVfdmFsdWUoVm9pZCwgeSwgbikgPSBmbG9vcigoeStuKS8yKWAgcGVyIGhvbGRlciBhbmQKICBmbG9vcigocnkgKyBybikvMikgZm9yIHRoZSBwb29sLiBUaGUgc3VtIG9mIGZsb29ycyBpcyBhdCBtb3N0IHRoZSBmbG9vciBvZgogIHRoZSBzdW0sIHNvIHRvdGFsIHBheW91dCA8PSAozqQoeV9pICsgbl9pKSArIHJ5ICsgcm4pIC8gMiA9IHNldHNfbWludGVkLgogIFNwbGl0IGluY3JlYXNlcyB0aGUgbnVtYmVyIG9mIGhvbGRlcnMgdGhhdCBjYW4gZWFjaCBsb3NlIHVwIHRvIDAuNSB1bml0IHRvCiAgZmxvb3JpbmcsIGJ1dCB0aGUgZHVzdCBpcyBib3VuZGVkIGJ5IHRoZSBudW1iZXIgb2YgaG9sZGVycyBhbmQgbmV2ZXIgYnJlYWtzCiAgdGhlIHNvbHZlbmN5IGludmFyaWFudC4KCmBzZWxsYCB1c2VzIGBjaGVja2VkX3N1YmAgZm9yIGBzZXRzX21pbnRlZGAsIHNvIGEgbG9naWMgZXJyb3IgY2Fubm90IHVuZGVyZmxvdwppbnRvIGEgaHVnZSB2YWx1ZSBhbmQgYnJlYWsgdGhlIGludmFyaWFudC4gYHF1b3RlX21lcmdlX21heChtYXJrZXRfaWQsIGhvbGRlcilgCndyYXBzIGBtYXRoOjptZXJnZV9tYXhgIG92ZXIgYGdldF9wb3NpdGlvbmAsIHNvIGZyb250ZW5kcyBjYW4gb2ZmZXIgIm1lcmdlIGFsbCIuCgpUaGUgY29sbGF0ZXJhbCB0aGF0IGBzcGxpdGAgbG9ja3MgaXMgKipub3QqKiBjbGFpbWFibGUgdGhyb3VnaCBgY2xhaW1fcG9vbF9yZW1haW5kZXJgOgp0aGF0IGZ1bmN0aW9uIHBheXMgb25seSBmcm9tIHRoZSBwb29sIHJlc2VydmVzLCBhbmQgc3BsaXQgc2V0cyBuZXZlciB0b3VjaAp0aGUgcmVzZXJ2ZXMuIFRoZSBjcmVhdG9yL0xQIGNhbm5vdCBjbGFpbSB1c2VyLXNwbGl0IGNvbGxhdGVyYWwuCgoqKkZlZSBzcGxpdCBhbmQgcmVjaXBpZW50IHNuYXBzaG90LioqIGBjcmVhdGVfbWFya2V0YCBzbmFwc2hvdHMgYQpgRmVlVGVybXMgeyByZWNpcGllbnQsIHByb3RvY29sX3NoYXJlX2Jwc31gIHNpZGUgZW50cnkgcGVyIG1hcmtldCwgc28KYHNldF90cmVhc3VyeWAgLyBgc2V0X3Byb3RvY29sX2ZlZV9zaGFyZV9icHNgIG9ubHkgYWZmZWN0IG1hcmtldHMgY3JlYXRlZAphZnRlciB0aGVtLiBFYWNoIHRyYWRlJ3MgZmVlIGlzIHNwbGl0IG9uY2UgYXQgYWNjcnVhbCB0aW1lCihgbWF0aDo6c3BsaXRfZmVlYCwgcHJvdG9jb2wgc2hhcmVzIHJvdW5kIHVwIHNvIGBwcm90b2NvbCArIGxwID09IGZlZWAKZXhhY3RseSk6IHRoZSBwcm90b2NvbCBwb3J0aW9uIGFjY3VtdWxhdGVzIGluIGBNYXJrZXQuZmVlc19hY2NydWVkYCBhbmQgaXMKc3dlcHQgdG8gdGhlIHNuYXBzaG90dGVkIHJlY2lwaWVudCBieSB0aGUgcGVybWlzc2lvbmxlc3MgYHN3ZWVwX2ZlZXNgCihvbGQgYEZlZXNTd2VwdGAgZXZlbnQga2VwdCBmb3IgaW5kZXhlcnMsIHBsdXMgYEZlZXNTd2VwdFRvYCk7IHRoZSBjcmVhdG9yCnBvcnRpb24gYWNjdW11bGF0ZXMgaW4gYSBgTHBGZWVzKG1hcmtldF9pZClgIHNpZGUgZW50cnksIGNsYWltYWJsZSBhbnkgdGltZQooYmVmb3JlIGZpbmFsaXR5IHRvbykgdmlhIGBjbGFpbV9scF9mZWVzYCwgYW5kIGFsc28gZHJhaW5lZCBieQpgY2xhaW1fcG9vbF9yZW1haW5kZXJgLiBNYXJrZXRzIGNyZWF0ZWQgYmVmb3JlIHRoaXMgY2hhbmdlIGhhdmUgbm8KYEZlZVRlcm1zYCBlbnRyeSBhbmQgZmFsbCBiYWNrIHRvIHRoZSBvbGQgYmVoYXZpb3I6IHJlY2lwaWVudCA9IHdoYXRldmVyCmBEYXRhS2V5OjpUcmVhc3VyeWAgaG9sZHMgYXQgc3dlZXAgdGltZSwgYHByb3RvY29sX3NoYXJlX2JwcyA9IDEwXzAwMGAg4oCUCmZ1bGx5IGJhY2t3YXJkIGNvbXBhdGlibGUsIG5vIG1pZ3JhdGlvbiB0cmFuc2FjdGlvbiBuZWVkZWQuIFRoZSBzZXBhcmF0ZQpMUCBiYWxhbmNlIChyYXRoZXIgdGhhbiBhZGRpbmcgZmVlcyB0byB0aGUgcmVzZXJ2ZXMpIGlzIGRlbGliZXJhdGU6IGl0IGRvZXMKbm90IG1vdmUgYGtgIG9yIHRoZSBwcmljZSBhbmQgbWFwcyBkaXJlY3RseSBvbnRvIHRoZSBwZXItTFAgZmVlIGFjY3VtdWxhdG9yCm9mIHRoZSBmdXR1cmUgbXVsdGktTFAgZGVzaWduIChbd2F2ZS1pc3N1ZSAwMl0od2F2ZS1pc3N1ZXMvMDItbXVsdGktbHAtbGlxdWlkaXR5Lm1kKSkuCgoqKlRyYWRlIGJvdW5kcyBhbmQgY2lyY3VpdCBicmVha2Vycy4qKiBUd28gbGF5ZXJzIG9mIHByb3RlY3Rpb24gYmV5b25kIHRoZQpzaGFyZS1jb3VudCBzbGlwcGFnZSBwYXJhbWV0ZXJzOgoKLSAqRGVhZGxpbmUgKyBsaW1pdCBwcmljZSoqICgjMTIpOiBgYnV5X3YyYCAvIGBzZWxsX3YyYCB0YWtlIGEKICBgZGVhZGxpbmVgIChsZWRnZXIgKip0aW1lc3RhbXAqKiwgdW5peCBzZWNvbmRzKSBjaGVja2VkIGJlZm9yZSBhbnl0aGluZwogIGVsc2UsIGFuZCBhIGBsaW1pdF9wcmljZV9icHNgIGJvdW5kaW5nIHRoZSAqKmF2ZXJhZ2UgZXhlY3V0aW9uIHByaWNlKioKICAoYGNvbGxhdGVyYWxfaW4gLyBzaGFyZXNfb3V0YCBmb3IgYnV5cywgYGNvbGxhdGVyYWxfb3V0IC8gc2hhcmVzX2luYCBmb3IKICBzZWxscywgZmVlIGluY2x1ZGVkLCBjb21wYXJlZCBieSBjcm9zcy1tdWx0aXBsaWNhdGlvbikuIGAwYCBtZWFucyAibm8KICBsaW1pdCIgZm9yIGJ1eXM7IGZvciBzZWxscyBpdCBpcyB0cml2aWFsbHkgc2F0aXNmaWVkIGFuZCBidXlzIG5vCiAgcHJvdGVjdGlvbi4gVGhlIG9yaWdpbmFsIGBidXlgIC8gYHNlbGxgIHJlbWFpbiBhcyB0aGluIHdyYXBwZXJzIGZvcgogIGJhY2t3YXJkIGNvbXBhdGliaWxpdHkgKHNhbWUgYm9keSwgbm8gYm91bmRzKS4KLSAqUGVyLW1hcmtldCBicmVha2VycyoqICgjMTApOiBgQnJlYWtlckNvbmZpZyB7IG1heF9pbXBhY3RfYnBzLCBiYW5kX2Jwc30gYAogIGlzIHNuYXBzaG90dGVkIHBlciBtYXJrZXQgZnJvbSBhbiBhZG1pbiBkZWZhdWx0IChgc2V0X2RlZmF1bHRfYnJlYWtlcmAsCiAgd2hpY2ggcmVqZWN0cyBgYmFuZF9icHMgPCBtYXhfaW1wYWN0X2Jwc2AgYmVjYXVzZSB0aGF0IG1ha2VzIG9uZSB0cmFkZQogIGNvdmVyIHRoZSB3aG9sZSBiYW5kKS4gYG1heF9pbXBhY3RfYnBzYCBib3VuZHMgYSBzaW5nbGUgdHJhZGUncwogIHxwb3N0IOKIkiBwcmV8IFlFUy1wcmljZSBtb3ZlIChgPmAg4oCUIGEgdHJhZGUgbW92aW5nIGV4YWN0bHkgdGhlIGNhcAogIHBhc3Nlcyk7IGBiYW5kX2Jwc2AgYm91bmRzIHxwb3N0IOKIkiBsZWRnZXItb3BlbiBwcmljZXwsIHdpdGggdGhlIHJlZmVyZW5jZQogIHN0b3JlZCBpbiBzaG9ydC1UTEwgKip0ZW1wb3JhcnkqKiBzdG9yYWdlIGtleWVkIGJ5IGxlZGdlciBzZXF1ZW5jZSwgc28gaXQKICByZXNldHMgYnkgaXRzZWxmIGV2ZXJ5IGxlZGdlci4gMCBkaXNhYmxlcyBlaXRoZXIgY2hlY2s7IGxlZ2FjeSBtYXJrZXRzCiAgaGF2ZSBubyBjb25maWcgYW5kIGFyZSB1bmFmZmVjdGVkLiBCcmVha2VyIHRyaXBzIHJldmVydCB3aXRoCiAgYFByaWNlSW1wYWN0VG9vSGlnaGAgLyBgUHJpY2VCYW5kRXhjZWVkZWRgIGFuZCDigJQgYmVjYXVzZSBTb3JvYmFuIHJvbGxzCiAgYmFjayBhbiBpbnZvY2F0aW9uJ3MgZXZlbnRzIG9uIGBFcnJgIOKAlCBlbWl0ICoqbm8qKiBldmVudCAodGhlIGVycm9yIGNvZGVzCiAgYW5kIHRoZSBgd291bGRfdHJpcGAgLyBgYnJlYWtlcl9jb25maWdgIC8gYGJyZWFrZXJfc3RhdGVgIHZpZXdzIGFyZSB0aGUKICBvYnNlcnZhYmlsaXR5IHBhdGg7IHNlZSB0aGUgY29tbWVudCBvbiBgY2hlY2tfYnJlYWtlcnNgKS4KCiAgKldvcnN0LWNhc2UgbG9jayBjb3N0LiogVGhlIGJhbmQgY2Fubm90IGJlIHJhdGNoZXRlZDogdGhlIHJlZmVyZW5jZSBpcwogIHRoZSBsZWRnZXItb3BlbiBwcmljZSwgc28gYW4gYXR0YWNrZXIgd2hvIHB1c2hlcyB0aGUgcHJpY2UgdG8gdGhlIGJhbmQKICBlZGdlIG9ubHkgYmxvY2tzIGZ1cnRoZXIgdHJhZGVzIGZvciB0aGUgcmVzdCBvZiB0aGF0IGxlZGdlciAofjUgcykg4oCUCiAgYW5kIHBheXMgdGhlIHRyYWRpbmcgZmVlIHBsdXMgcHJpY2UgaW1wYWN0IHRvIGRvIGl0LCB3aGljaCBhcmJpdHJhZ2V1cnMKICBjYW4gdGFrZSBiYWNrIHRoZSBuZXh0IGxlZGdlci4gVGhlIGJyZWFrZXJzIGNhbm5vdCBsb2NrIGEgbWFya2V0IGFjcm9zcwogIGxlZGdlcnMgYnkgY29uc3RydWN0aW9uLgoKKipUcmFuc2ZlcmFiaWxpdHkuKiogYHRyYW5zZmVyX3Bvc2l0aW9uKGZyb20sIHRvLCBtYXJrZXRfaWQsIG91dGNvbWUsCmFtb3VudClgIG1vdmVzIHNoYXJlcyBiZXR3ZWVuIGFueSB0d28gYWRkcmVzc2VzIChvd25lciBhdXRoOyBhbGxvd2VkIHdoaWxlCmBQYXVzZWRgIOKAlCBhIHRyYW5zZmVyIG1vdmVzIG5vIGNvbGxhdGVyYWwg4oCUIGFuZCBhZnRlciBmaW5hbGl0eSB1bnRpbApgcmVkZWVtYCksIHJlamVjdGluZyBzZWxmLXRyYW5zZmVycywgdHJhbnNmZXJzIHRvIHRoZSBjb250cmFjdCdzIG93bgphZGRyZXNzICh0aGV5IGNvdWxkIG5ldmVyIGJlIHJlZGVlbWVkKSBhbmQgb3Zlci10cmFuc2ZlcnMsIGFuZCBlbWl0dGluZwpgUG9zaXRpb25UcmFuc2ZlcnJlZGAgc28gaW5kZXhlcnMgc3RheSBpbiBzeW5jLiBgdHJhbnNmZXJfbHAobWFya2V0X2lkLApuZXdfY3JlYXRvcilgIChjdXJyZW50LWNyZWF0b3IgYXV0aCwgdW50aWwgYGxwX2NsYWltZWRgKSBtb3ZlcyB0aGUgc2luZ2xlCkxQIHJvbGUg4oCUIHRoZSByaWdodCB0byBgY2xhaW1fcG9vbF9yZW1haW5kZXJgIGFuZCBgY2xhaW1fbHBfZmVlc2Ag4oCUIGFuZAp lbWl0cyBgTHBUcmFuc2ZlcnJlZGAuIEJvdGggcHJlc2VydmUgdGhlIHNvbHZlbmN5IGludmFyaWFudCBieQpjb25zdHJ1Y3Rpb247IHRoZSBwb3NpdGlvbiBtYXBwaW5nIGlzIHVuY2hhbmdlZCBkb3duIHRvIHRoZSAicmVtb3ZlCnplcm8gZW50cmllcyIgcnVsZS4KClNwbGl0IC8gbWVyZ2UgYWRkIGB0d28gbmV3IGV2ZW50cywgYFNldHNTcGxpdGAgYW5kIGBTZXRzTWVyZ2VkYCwgc28gdGhlCmluZGV4ZXIgZnJvbSBbYHdhdmUtaXNzdWVzLzA2YF0od2F2ZS1pc3N1ZXMvMDYtaW5kZXhlci5tZCkgY2FuIHRyYWNrIHBvc2l0aW9ucwp3aXRob3V0IHJlcGxheWluZyB0cmFkZXMuCgoqKlJlc29sdXRpb24gY29tbWl0bWVudCoqOiBgcmVzb2x1dGlvbl9oYXNoYCBpcyBmaXhlZCBhdCBgY3JlYXRlX21hcmtldGAKdGltZSDigJQgc2VlIFtBRFIgMDAwMV0oYWRyLzAwMDEtcmVzb2x1dGlvbi1jb21taXRtZW50Lm1kKSBmb3Igd2h5LgoKTGlmZWN5Y2xlOiBgY3JlYXRlX21hcmtldGAg4oaSIGBidXlgL2BzZWxsYCAod2hpbGUgb3BlbjsgYGJ1eV92MmAvYHNlbGxfdjJgCndpdGggYm91bmRzKSwgYHNwbGl0YCAod2hpbGUgb3BlbiBhbmQgYmVmb3JlIGNsb3NlKSwgYG1lcmdlYCAod2hpbGUgb3BlbiwKYW55IHRpbWUgYmVmb3JlIHJlc29sdXRpb24sIGluY2x1ZGluZyBhZnRlciBjbG9zZSBhbmQgd2hpbGUgcGF1c2VkKSDihpIKYHJlc29sdmVgIG9yIGB2b2lkX21hcmtldGAgKHJlc29sdmVyLW9ubHkpIOKGkiBgcmVkZWVtYCBwZXIgaG9sZGVyLApgY2xhaW1fcG9vbF9yZW1haW5kZXJgIGZvciB0aGUgY3JlYXRvci9MUCwgYHN3ZWVwX2ZlZXNgIChwZXJtaXNzaW9ubGVzcykgdG8KdGhlIHNuYXBzaG90dGVkIGZlZSByZWNpcGllbnQuIFBvc2l0aW9ucyBhbmQgTFAgb3duZXJzaGlwIGNhbiBjaGFuZ2UgaGFuZHMgYXQKYW55IHBvaW50IHZpYSBgdHJhbnNmZXJfcG9zaXRpb25gIC8gYHRyYW5zZmVyX2xwYC4KCiMjIyByZXNvbHZlcgoKSW5kZXBlbmRlbnQgcmVzb2x1dGlvbiBtb2RlcywgYWxsIHVsdGltYXRlbHkgY2FsbGluZwpgbWFya2V0X2NvcmUucmVzb2x2ZShtYXJrZXRfaWQsIG91dGNvbWUpYDoKCi0gKipQcmljZVRocmVzaG9sZCoqOiByZWFkcyBhIFtSZWZsZWN0b3JdKGh0dHBzOi8vcmVmbGVjdG9yLm5ldHdvcmspIFNFUC00MAogIHByaWNlIGZlZWQgYXQgKG9yIGFmdGVyKSB0aGUgbWFya2V0J3MgYGNsb3NlX3RpbWVgLCBjb21wYXJlcyB0byBhCiAgdGhyZXNob2xkLCBlbmZvcmNlcyBhIG1heCBzdGFsZW5lc3Mgd2luZG93LgotICoqQXR0ZXN0ZWQqKjogbS1vZi1uIHNpZ25lciB2b3Rlczsgb25jZSBgdGhyZXNob2xkYCBzaWduZXJzIGFncmVlLCBhCiAgZGlzcHV0ZSB3aW5kb3cgb3BlbnM7IGFueW9uZSBjYW4gZmluYWxpemUgYWZ0ZXIgaXQgZWxhcHNlcywgb3IgYSBndWFyZGlhbgogICh0aGUgcmVzb2x2ZXIncyBgYWRtaW5gKSBjYW4gYGNhbmNlbF9wcm9wb3NhbGAgZHVyaW5nIHRoZSB3aW5kb3cuCi0gKipXZWlnaHRlZCBrZXlzKio6IGEgY29tbWl0dGVlIG9mIHJhdyBFZDI1NTE5IHB1YmxpYyBrZXlzIHdpdGggd2VpZ2h0cy4KICBNZW1iZXJzIHNpZ24gYSBkb21haW4tc2VwYXJhdGVkIG1lc3NhZ2Ugb2ZmLWNoYWluIGFuZCBhbnlvbmUgc3VibWl0cyB0aGUKICBzaWduYXR1cmVzIHRvIGBzdWJtaXRfc2lnbmF0dXJlc2AgaW4gb25lIHRyYW5zYWN0aW9uOyB0aGUgd2VpZ2h0IHRocmVzaG9sZAogIHN0YXJ0cyB0aGUgc2FtZSBkaXNwdXRlIHdpbmRvdy4gYGNhbmNlbF9wcm9wb3NhbGAgbW92ZXMgdGhlIG1hcmtldCB0byBhIG5ldwogIHJvdW5kLCBpbnZhbGlkYXRpbmcgZWFybGllciBzaWduYXR1cmVzLiBNZXNzYWdlIGZvcm1hdDogQURSyIDAwMDEuCgpOZWl0aGVyIG1vZGUgY2FuIGJlIGNvbmZpZ3VyZWQgdW50aWwgdGhlIHJldmVhbGVkIHNwZWMncyBoYXNoIG1hdGNoZXMgdGhlCm1hcmtldCdzIGNvbW1pdG1lbnQgKGByZWdpc3Rlcl9wcmljZV9zcGVjYCAvIGByZWdpc3Rlcl9zaWduZXJfc3BlY2Ag4oCUIHNlZQpBRFIgMDAwMSkuIEEgZ3VhcmRpYW4gY2FuIGFsc28gYGd1YXJkaWFuX3ZvaWRfbWFya2V0YCBhbiB1bnJlc29sdmFibGUKbWFya2V0IGRpcmVjdGx5LgoKIyMjIyBCb25kZWQgZGlzcHV0ZXMgKGBTaWduZXJzRGlzcHV0YWJsZWApCgpBIGBTaWduZXJzRGlzcHV0YWJsZWAgc3BlYyBhZGRzIGFuIG9wdGltaXN0aWMgY2hhbGxlbmdlIHRvIEF0dGVzdGVkIG1vZGUuCldoaWxlIGEgcHJvcG9zYWwncyBkaXNwdXRlIHdpbmRvdyBpcyBvcGVuLCBhbnlvbmUgY2FuIGBkaXNwdXRlYCBpdCBieQplc2Nyb3dpbmcgYGRpc3B1dGVfYm9uZGAgb2YgdGhlIGNvbGxhdGVyYWwgdG9rZW4gaW4gdGhlIHJlc29sdmVyLiBUaGF0CmZyZWV6ZXMgYGZpbmFsaXplX3NpZ25lcnNgLCBgYXR0ZXN0YCwgYGNhbmNlbF9wcm9wb3NhbGAgYW5kIGBleHBpcmVfbWFya2V0YApkaXNwdXRlIGFjdGl2ZSkgYW5kIGVzY2FsYXRlcyB0byB0aGUgYXV0aG9yaXR5IGNvbW1pdHRlZCBpbiB0aGUgc3BlYzogdGhlCmd1YXJkaWFuIChgc2V0dGxlX2Rpc3B1dGVgKSBvciBhIGBrYC1vZi1gbmAgY29tbWl0dGVlIGRpc2pvaW50IGZyb20gdGhlCnNpZ25lcnMgKGBlc2NhbGF0aW9uX2F0dGVzdGApLiBVcGhvbGRpbmcgdGhlIHByb3Bvc2FsIHJlc29sdmVzIHRvIGl0IGFuZApmb3JmZWl0cyB0aGUgYm9uZCB0byBtYXJrZXQtY29yZSdzIHRyZWFzdXJ5OyBhbnkgb3RoZXIgcnVsaW5nIHJlc29sdmVzIHRvIHRoZQp2ZXJkaWN0IChvciB2b2lkcyBmb3IgYEludmFsaWRgKSBhbmQgcmV0dXJucyB0aGUgYm9uZC4gSWYgbm9ib2R5IHJ1bGVzIHdpdGhpbgpgZXNjYWxhdGlvbl90aW1lb3V0YCBvZiB0aGUgZGlzcHV0ZSwgYW55b25lIG1heSBgZXhwaXJlX2Rpc3B1dGVgOiB0aGUgbWFya2V0IGlzCnZvaWRlZCBhbmQgdGhlIGJvbmQgcmVmdW5kZWQuIGBndWFyZGlhbl92b2lkX21hcmtldGAgZHVyaW5nIGEgZGlzcHV0ZSBhbHNvCnJlZnVuZHMgaXQuIEJvbmRzIGxlYXZlIGVzY3JvdyBvbmx5IHZpYSB0aGUgcGVybWlzc2lvbmxlc3MKYGNsYWltX2Rpc3B1dGVfYm9uZGAgKHB1bGwsIHNvIGEgcGF5ZWUgdGhhdCBjYW5ub3QgcmVjZWl2ZSBjYW5ub3QgYmxvY2sKc2V0dGxlbWVudCk7IHRoZSByZXNvbHZlcidzIHRva2VuIGJhbGFuY2UgYWx3YXlzIGVxdWFscyB0aGUgYm9uZHMgaXQgc3RpbGwKaG9sZHMuCgpgYGBtZXJtYWlkCnN0YXRlRGlhZ3JhbS12MgogICAgWypdIC0tPiBTaWduZXJzUGVuZGluZzogcmVnaXN0ZXJfZGlzcHV0YWJsZV9zcGVjCiAgICBTaWduZXJzUGVuZGluZyAtLT4gU2lnbmVyc1BlbmRpbmc6IGF0dGVzdCAocHJvcG9zYWwgYXQgdGhyZXNob2xkKQogICAgU2lnbmVyc1BlbmRpbmcgLS0+IEZpbmFsaXplZDogZmluYWxpemVfc2lnbmVycyAod2luZG93IGVsYXBzZWQpCiAgICBTaWduZXJzUGVuZGluZyAtLT4gRGlzcHV0ZWQ6IGRpc3B1dGUgKHdpbmRvdyBvcGVuLCBib25kIGVzY3Jvd2VkKQogICAgRGlzcHV0ZWQgLS0+IEZpbmFsaXplZDogc2V0dGxlX2Rpc3B1dGUgLyBlc2NhbGF0aW9uX2F0dGVzdCAoayB2b3RlcykKICAgIERpc3B1dGVkIC0tPiBGaW5hbGl6ZWQ6IGV4cGlyZV9kaXNwdXRlICh0aW1lb3V0LCB2b2lkLCByZWZ1bmQpCiAgICBEaXNwdXRlZCAtLT4gRmluYWxpemVkOiBndWFyZGlhbl92b2lkX21hcmtldCAodm9pZCwgcmVmdW5kKQogICAgU2lnbmVyc1BlbmRpbmcgLS0+IEV4cGlyZWQ6IGV4cGlyZV9tYXJrZXQgKG5vIHBlbmRpbmcgcHJvcG9zYWwpCiAgICBGaW5hbGl6ZWQgLS0+IFsqXTogY2xhaW1fZGlzcHV0ZV9ib25kIHBheXMgdGhlIHBheWVlCmBgYAoKKipSZXdhcmRzLCBob25lc3RseToqKiBhIHdpbm5pbmcgZGlzcHV0ZXIgb25seSBnZXRzIHRoZWlyIGJvbmQgYmFjay4gVGhlCnJlc29sdmVyIGhvbGRzIG5vIGZ1bmRzIGJlc2lkZXMgYm9uZHMsIHNvIHRoZXJlIGlzIG5vdGhpbmcgdG8gcGF5IGEgcmV3YXJkCmZyb20gdW50aWwgc2lnbmVycyBhbHNvIHBvc3QgYm9uZHMgKHNpZ25lciBzdGFraW5nIGlzIHNlcGFyYXRlIHdvcmspLiBUaGUKaW5jZW50aXZlIHRvIGRpc3B1dGUgaXMgdGhlcmVmb3JlIHByb3RlY3Rpbmcgb25lJ3Mgb3duIHBvc2l0aW9uLCBub3QgcHJvZml0LgoKTGl2ZW5lc3M6IGByZXNvbHV0aW9uX2RlYWRsaW5lYCBpcyBgY2xvc2VfdGltZWAgKyAzMCBkYXlzLiBBZnRlciBpdCBhbnlvbmUgY2FuCmNhbGwgYGV4cGlyZV9tYXJrZXRgLCB3aGljaCByZXNvbHZlcyB0aGUgbWFya2V0IGlmIGl0IHN0aWxsIGNhbiBiZSAodmFsaWQKcHJpY2UgZmVlZCkgYW5kIG90aGVyd2lzZSB2b2lkcyBpdCB0aHJvdWdoIG1hcmtldC1jb3JlLCBzbyBjb2xsYXRlcmFsIGlzIG5ldmVyCmxvY2tlZCBiZWhpbmQgYSBtaXNzaW5nIHJldmVhbCBvciBhIHNpbGVudCBjb21taXR0ZWUuIFNlZSBBRFIgMDAwMS4KClRoZSByZXNvbHZlciBuZXZlciBkZXBlbmRzIG9uIGBtYXJrZXQtY29yZWAncyBSdXN0IGNyYXRlIOKAlCBzZWUKW0FEUiAwMDAyXShhZHIvMDAwMi1jcm9zcy1jb250cmFjdC1jYWxscy5tZCkgZm9yIHdoeSwgYW5kIHdoYXQgdGhhdCB0cmFkZXMKb2ZmLgoKIyMjIHRyZWFzdXJ5CgpIb2xkcyB0aGUgYWdlbnRzJyBwb29sZWQgVVNEQyBhbmQgaXMgdGhlICpvbmx5KiBwYXRoIHRoYXQgc3BlbmRzIGl0OiBhbgphZ2VudCBjYWxscyBgYWdlbnRfY3JlYXRlX21hcmtldGAgLyBgYWdlbnRfYnV5YCAvIGBhZ2VudF9zZWxsYCAvCmBhZ2VudF9idXlfdjJgIC8gYGFnZW50X3NlbGxfdjJgLCB0aGUgdHJlYXN1cnkgY2hlY2tzIGl0cyBvd24KcGVyLXRyYWRlL3Blci1tYXJrZXQvZGFpbHkgY2FwcywgdGhlbiBjYWxscyBgbWFya2V0LWNvcmVgIGl0c2VsZiBhcyB0aGUKdHJhZGVyL2NyZWF0b3IuIFRoaXMgbWVhbnMgdGhlIGNhcHMgYXJlIGEgcmVhbCBvbi1jaGFpbiBsaW1pdCBvbiB3aGF0IHRoZQphdXRvbWF0ZWQgYWdlbnQgY2FuIGRlcGxveSDigJQgYW4gYWdlbnQncyBvd24ga2V5IGNhbGxpbmcgYG1hcmtldC1jb3JlYApkaXJlY3RseSB3b3VsZCBqdXN0IGJlIHRyYWRpbmcgaXRzIG93biBzZXBhcmF0ZSBmdW5kcywgbm90IGJ5cGFzc2luZyBhIGNhcApvbiB0aGUgdHJlYXN1cnkncyBtb25leS4gVGhlIGAqX3YyYCB0d2lucyBmb3J3YXJkIHRoZSBzYW1lIGNhcHMgcGx1cwptYXJrZXQtY29yZSdzIGRlYWRsaW5lIC8gbGltaXQtcHJpY2UgYm91bmRzLCBzbyBhIHJldmVydCBmcm9tIGVpdGhlciBsYXllcgpsZWF2ZXMgdGhlIGNhcHMgdW5jaGFuZ2VkICh0aGUgd2hvbGUgaW52b2NhdGlvbiBpcyBhdG9taWMpLiBUaGUgdHJlYXN1cnkncwpjcmVhdG9yLXNpZGUgY2xhaW1zIGFyZSBzcGxpdCB0aGUgc2FtZSB3YXkgdGhlIGZlZXMgYXJlOiBgY29sbGVjdF9tYXJrZXRfZmVlc2AKc3dlZXBzIHRoZSAqKnByb3RvY29sIHBvcnRpb24qKiB0byB0aGUgdHJlYXN1cnksIHdoaWxlIGBhZ2VudF9jbGFpbV9scF9mZWVzYApjbGFpbXMgdGhlIExQIHBvcnRpb24gZm9yIG1hcmtldHMgdGhlIHRyZWFzdXJ5IGNyZWF0ZWQuCgpUcmVhc3VyeSBgYWdlbnRfc3BsaXRgIC8gYGFnZW50X21lcmdlYCBmb3J3YXJkZXJzIGFyZSBvdXQgb2Ygc2NvcGUgZm9yIHRoaXMKcHJpbWl0aXZlIGFuZCB3aWxsIGZvbGxvdyBpbiBhIHNlcGFyYXRlIGNoYW5nZTsgdGhlIHRyZWFzdXJ5IGNhbiBhbHJlYWR5IHVzZQp0aGUgY29yZSBgc3BsaXRgIC8gYG1lcmdlYCBkaXJlY3RseSB3aXRoIGl0cyBvd24gYWRkcmVzcyB3aGVuIG5lZWRlZC4KCoKqKk1pZ3JhdGlvbiB0byBhIHN1Y2Nlc3NvciB0cmVhc3VyeS4qKiBUaGUgdHJlYXN1cnkgaGFzIG5vIHVwZ3JhZGUgcGF0aCBvcgpjb25maWcgc2V0dGVycyBieSBkZXNpZ24sIHNvIHJlZGVwbG95aW5nIGl0IChidWcgZml4LCBjYXAgY2hhbmdlLCBhZ2VudApyb3RhdGlvbikgbWVhbnMgZGVwbG95aW5nIGEgbmV3IGNvbnRyYWN0LiBgc2V0X3N1Y2Nlc3NvcihzdWNjZXNzb3IpYAp hZG1pbikgcmVjb3JkcyB3aGVyZSB2YWx1ZSBtYXkgZ28gYW5kIGVtaXRzIGBTdWNjZXNzb3JTZXRgOyB0aGVuCmBtaWdyYXRlX21hcmtldChtYXJrZXRfaWQpYCAoYWRtaW4sICoqbm90KiogYWdlbnQpIG1vdmVzIHRoZSB0cmVhc3VyeSdzCllFUy9OTyBwb3NpdGlvbiBhbmQsIGlmIGl0IGlzIHN0aWxsIHRoZSBMCiwgaXRzIExQIG93bmVyc2hpcCBmb3Igb25lIG1hcmtldAp0byB0aGUgc3VjY2Vzc29yIOKAlCBtYXJrZXQgYnkgbWFya2V0LCBzbyB0aGUgZm9vdHByaW50IHN0YXlzIGJvdW5kZWQg4oCUIGFuZAplbWl0cyBgTWFya2V0TWlncmF0ZWRgLiBUaGUgYXV0aCBtb2RlbDoKCi0gVGhlIGFnZW50IGhhcyBubyBwYXRoOiBib3RoIG1pZ3JhdGlvbiBlbnRyeXBvaW50cyBhcmUgYHJlcXVpcmVfYWRtaW5gLgotIFRoZSBkZXN0aW5hdGlvbiBpcyBmaXhlZCB0byB0aGUgY29uZmlndXJlZCBgU3VjY2Vzc29yYCDigJQgYG1pZ3JhdGVfbWFya2V0YAogIHRha2VzIG5vIGRlc3RpbmF0aW9uIGFyZ3VtZW50LCBzbyBldmVuIGEgY29tcHJvbWlzZWQgYWdlbnQga2V5IGNhbm5vdAogIHJlZGlyZWN0IHZhbHVlLCBhbmQgYSBjb21wcm9taXNlZCBhZG1pbiBnYWlucyBubyBuZXcgcG93ZXIgb3ZlciAqdXNlcioKICBmdW5kcyAoaXQgY291bGQgYWxyZWFkeSBgd2l0aGRyYXdgOyBtaWdyYXRpb24gb25seSBtb3ZlcwogIHRyZWFzdXJ5LW93bmVkIHBvc2l0aW9ucywgYW5kIHRoZSBzdWNjZXNzb3IgaXMgdmlzaWJsZSBvbi1jaGFpbiB2aWEKICBgU3VjY2Vzc29yU2V0YCkuCi0gVGhlIHRyZWFzdXJ5J3MgY2FsbHMgdG8gbWFya2V0LWNvcmUncyBgdHJhbnNmZXJfcG9zaXRpb25gIC8gYHRyYW5zZmVyX2xwYAogIGFyZSAqZGlyZWN0KiBjYWxscywgc28gbWFya2V0LWNvcmUncyBgcmVxdWlyZV9hdXRoYCBvbiB0aGUgdHJlYXN1cnkncyBvd24KICBhZGRyZXNzIGlzIHNhdGlzZmllZCBpbXBsaWNpdGx5IGJ5IHRoZSBpbnZva2VyIHJ1bGUg4oCUIG5vCiAgYGF1dGhvcml6ZV9hc19jdXJyZW50X2NvbnRyYWN0YCBlbnRyeSBpcyBuZWVkZWQgKHVubGlrZSB0aGUgbmVzdGVkIHRva2VuCiAgY2FsbCBpbiBgYXV0aG9yaXplX3Rva2VuX3B1bGxgKS4gVGhpcyBpcyBwcm92ZW4gYnkgdGhlCiAgYHBpdGZhbGxfbWlncmF0ZV9tYXJrZXRfbmVlZHNfb25seV9hZG1pbl9hdXRoYCB0ZXN0LCB3aGljaCBwZXJtaXRzIG9ubHkKICB0aGUgYWRtaW4ncyBzaWduYXR1cmUgYW5kIG5vIHN1Yi1pbnZvY2F0aW9ucy4KCkEgbWlncmF0ZWQgbWFya2V0J3MgYE1hcmtldEV4cG9zdXJlYCBvbiB0aGUgc3VjY2Vzc29yIHN0YXJ0cyBhdCB6ZXJvIGFuZCB0aGUKb2xkIHRyZWFzdXJ5J3MgZW50cnkgaXMgY2xvc2VkIChgb3BlbiA9IGZhbHNlYCwgYW1vdW50IHByZXNlcnZlZCksIHNvIHRoZQpzdWNjZXNzb3IncyBjYXBzIGFwcGx5IHRvIGl0cyBvd24gZnV0dXJlIGFjdGl2aXR5IOKAlCBhY2NlcHRhYmxlIGJlY2F1c2UgdGhlCmNhcCBpcyBhIHBlci1kZXBsb3ltZW50IHJpc2sgYm91bmQsIG5vdCBhIG1hcmtldC1sZXZlbCBhY2NvdW50aW5nIHZhbHVlLgpTdWNjZXNzb3Itc2lkZSBhY2NlcHRhbmNlIChgYWNjZXB0X21pZ3JhdGlvbmApIGlzIGRlbGliZXJhdGVseSBub3QKaW1wbGVtZW50ZWQ6IGl0IHdvdWxkIHJlY29yZCBwcm92ZW5hbmNlIG9ubHksIGFuZCB0aGUgCg==
+# Architecture
+
+See the top-level diagram in [README.md](../README.md#architecture) for the
+system at a glance. This doc goes one level deeper into each contract's
+responsibilities and the invariants that hold across them.
+
+## Contracts
+
+### market-core
+
+The hub: every binary market lives here as one entry in persistent storage,
+keyed by `market_id`. Pricing is a Gnosis-style constant-product FPMM over
+internal YES/NO share accounting — no external LP token, no AMM pool
+contract per market. `contracts/market-core/src/math.rs` is the entire
+pricing engine, pure integer arithmetic, no `Env` dependency, so it's
+natively unit-testable and mirrored line-for-line in
+[`model/fpmm_model.py`](../model/fpmm_model.py) and
+`agents/core/fpmm.ts` for property testing and off-chain quoting.
+
+**Split and merge (complete-set primitives).** Beyond trading against the
+pool, a holder can mint or burn complete sets directly, mirroring Gnosis's
+Conditional Tokens `splitPosition` / `mergePositions`:
+
+- `split(holder, market_id, amount)` pulls `amount` collateral from `holder`
+  and credits `amount` YES **and** `amount` NO to their `Position`. It
+  requires `MarketStatus::Open`, `now < close_time` (reuses
+  `assert_tradable`) and `assert_not_paused`. After close, splitting has no
+  purpose and would only open timing games.
+- `merge(holder, market_id, amount)` burns `amount` YES and `amount` NO and
+  pays `amount` collateral back. It requires `MarketStatus::Open` but is
+  **allowed after `close_time` and while paused** — merging is a pure exit
+  that cannot harm the pool, and letting holders de-risk while the resolver
+  is slow is valuable. This asymmetry with `split` is deliberate.
+
+Neither entrypoint touches `reserve_yes`, `reserve_no` or `fees_accrued`, and
+neither charges a fee. Both emit events (`SetsSplit` / `SetsMerged`) so the
+indexer ([wave-issue 06](wave-issues/06-indexer.md)) can track positions.
+`merge` rejects a position with fewer than `amount` on either leg with
+`InsufficientShares` (#13); `split` respects `math::MAX_SETS` and returns
+`MarketTooLarge` (#15) above it. `math::merge_max(yes, no) = min(yes, no)`
+(mirrored in `model/fpmm_model.py` and `agents/core/fpmm.ts`) backs the
+`quote_merge_max(market_id, holder)` view for "merge all" UIs.
+
+**Invariant proof for split/merge.** With `sets_minted` as the total
+complete sets in existence:
+
+- *Split* adds `amount` to `sets_minted`, to `Σpos.yes` and to `Σpos.no`, so
+  `reserve_yes + Σpos.yes == sets_minted` is preserved (symmetrically for
+  NO). The contract's collateral balance grows by exactly `amount`, so
+  `balance == sets_minted + fees_accrued + lp_fees` holds.
+- *Merge* subtracts `amount` from all three, preserving the same equality,
+  and pays out exactly `amount` collateral, preserving the balance identity.
+- *Payout bound.* Resolved(Yes) pays `reserve_yes + Σpos.yes == sets_minted`.
+  Void pays `Σ floor((y_i + n_i)/2) + floor((r_y + r_n)/2) <=
+  (Σ(y_i + n_i) + r_y + r_n)/2 == sets_minted`. Split increases the number
+  of holders that can each lose up to 0.5 unit to flooring, but the total
+  paid never exceeds `sets_minted`.
+
+`sell` now uses `checked_sub` for `sets_minted` (previously unchecked), so
+the counter can never underflow and the invariant can never be silently
+broken by a bug elsewhere.
+
+**MAX_SETS griefing (documented decision).** An attacker can `split` up to
+`MAX_SETS` (1e15) and thereby push `sets_minted` to the cap, causing later
+`buy` calls to revert with `MarketTooLarge` (#15). This costs the attacker
+locked capital (they can `merge` out risk-free at any time), so it is a
+capital-intensive griefing vector rather than a cheap one. Decision: keep
+the single `MAX_SETS` bound for now (split sets count toward it) rather than
+introducing a separate per-market split cap or excluding split sets from the
+`buy` limit — the added accounting complexity and the risk of a second
+invariant to maintain outweigh the griefing cost, which is already bounded
+by the attacker's locked collateral. Revisit if a cheaper griefing path
+appears (e.g. flash-loanable collateral on the settlement asset).
+
+**Pause semantics for `merge`.** Because `merge` is allowed while paused, a
+paused contract can still pay out collateral. This is intentional: `merge`
+is a pure exit that cannot move the price or touch the pool, so it cannot be
+used to exploit a paused state. The security reviewer's sign-off on this is
+recorded in `SECURITY.md`.
+
+**Solvency invariant** (holds after every state transition — see the test
+suite for the ones exercised): the contract's own SEP-41 token balance for a
+market equals `sets_minted + fees_accrued + lp_fees` (`fees_accrued` is the
+protocol's pending share of trading fees, `lp_fees` the creator's — see the
+fee split below), and `reserve_yes + Σ(user yes positions) == sets_minted`
+(symmetrically for `no`).
+
+**Fee split and recipient snapshot.** `create_market` snapshots a
+`FeeTerms { recipient, protocol_share_bps }` side entry per market, so
+`set_treasury` / `set_protocol_fee_share_bps` only affect markets created
+after them. Each trade's fee is split once at accrual time
+(`math::split_fee`, protocol shares round up so `protocol + lp == fee`
+exactly): the protocol portion accumulates in `Market.fees_accrued` and is
+swept to the snapshotted recipient by the permissionless `sweep_fees`
+(old `FeesSwept` event kept for indexers, plus `FeesSweptTo`); the creator
+portion accumulates in a `LpFees(market_id)` side entry, claimable any time
+(before finality too) via `claim_lp_fees`, and also drained by
+`claim_pool_remainder`. Markets created before this change have no
+`FeeTerms` entry and fall back to the old behavior: recipient = whatever
+`DataKey::Treasury` holds at sweep time, `protocol_share_bps = 10_000` —
+fully backward compatible, no migration transaction needed. The separate
+LP balance (rather than adding fees to the reserves) is deliberate: it does
+not move `k` or the price and maps directly onto the per-LP fee accumulator
+of the future multi-LP design ([wave-issue 02](wave-issues/02-multi-lp-liquidity.md)).
+
+**Trade bounds and circuit breakers.** Two layers of protection beyond the
+share-count slippage parameters:
+
+- *Deadline + limit price* (#12): `buy_v2` / `sell_v2` take a
+  `deadline` (ledger **timestamp**, unix seconds) checked before anything
+  else, and a `limit_price_bps` bounding the **average execution price**
+  (`collateral_in / shares_out` for buys, `collateral_out / shares_in` for
+  sells, fee included, compared by cross-multiplication). `0` means "no
+  limit" for buys; for sells it is trivially satisfied and buys no
+  protection. The original `buy` / `sell` remain as thin wrappers for
+  backward compatibility (same body, no bounds).
+- *Per-market breakers* (#10): `BreakerConfig { max_impact_bps, band_bps }`
+  is snapshotted per market from an admin default (`set_default_breaker`,
+  which rejects `band_bps < max_impact_bps` because that makes one trade
+  cover the whole band). `max_impact_bps` bounds a single trade's
+  |post − pre| YES-price move (`>` — a trade moving exactly the cap
+  passes); `band_bps` bounds |post − ledger-open price|, with the reference
+  stored in short-TTL **temporary** storage keyed by ledger sequence, so it
+  resets by itself every ledger. 0 disables either check; legacy markets
+  have no config and are unaffected. Breaker trips revert with
+  `PriceImpactTooHigh` / `PriceBandExceeded` and — because Soroban rolls
+  back an invocation's events on `Err` — emit **no** event (the error codes
+  and the `would_trip` / `breaker_config` / `breaker_state` views are the
+  observability path; see the comment on `check_breakers`).
+
+  *Worst-case lock cost.* The band cannot be ratcheted: the reference is
+  the ledger-open price, so an attacker who pushes the price to the band
+  edge only blocks further trades for the rest of that ledger (~5 s) —
+  and pays the trading fee plus price impact to do it, which arbitrageurs
+  can take back the next ledger. The breakers cannot lock a market across
+  ledgers by construction.
+
+**Transferability.** `transfer_position(from, to, market_id, outcome,
+amount)` moves shares between any two addresses (owner auth; allowed while
+`Paused` — a transfer moves no collateral — and after finality until
+`redeem`), rejecting self-transfers, transfers to the contract's own
+address (they could never be redeemed) and over-transfers, and emitting
+`PositionTransferred` so indexers stay in sync. `transfer_lp(market_id,
+new_creator)` (current-creator auth, until `lp_claimed`) moves the single
+LP role — the right to `claim_pool_remainder` and `claim_lp_fees` — and
+emits `LpTransferred`. Both preserve the solvency invariant by
+construction; the position mapping is unchanged down to the "remove
+zero entries" rule.
+
+**Resolution commitment**: `resolution_hash` is fixed at `create_market`
+time — see [ADR 0001](adr/0001-resolution-commitment.md) for why.
+
+Lifecycle: `create_market` → `buy`/`sell` (while open; `buy_v2`/`sell_v2`
+with bounds) and `split`/`merge` (while open; `merge` also allowed after
+`close_time` and while paused) → `resolve` or `void_market` (resolver-only)
+→ `redeem` per holder, `claim_pool_remainder` for the creator/LP,
+`sweep_fees` (permissionless) to the snapshotted fee recipient. Positions
+and LP ownership can change hands at any point via `transfer_position` /
+`transfer_lp`. Split/merge never touch the pool, so `claim_pool_remainder`
+pays only from reserves and cannot claim user-split collateral.
+
+### resolver
+
+Independent resolution modes, all ultimately calling
+`market_core.resolve(market_id, outcome)`:
+
+- **PriceThreshold**: reads a [Reflector](https://reflector.network) SEP-40
+  price feed at (or after) the market's `close_time`, compares to a
+  threshold, enforces a max staleness window.
+- **Attested**: m-of-n signer votes; once `threshold` signers agree, a
+  dispute window opens; anyone can finalize after it elapses, or a guardian
+  (the resolver's `admin`) can `cancel_proposal` during the window.
+- **Weighted keys**: a committee of raw Ed25519 public keys with weights.
+  Members sign a domain-separated message off-chain and anyone submits the
+  signatures to `submit_signatures` in one transaction; the weight threshold
+  starts the same dispute window. `cancel_proposal` moves the market to a new
+  round, invalidating earlier signatures. Message format: ADR 0001.
+
+Neither mode can be configured until the revealed spec's hash matches the
+market's commitment (`register_price_spec` / `register_signer_spec` — see
+ADR 0001). A guardian can also `guardian_void_market` an unresolvable
+market directly.
+
+#### Bonded disputes (`SignersDisputable`)
+
+A `SignersDisputable` spec adds an optimistic challenge to Attested mode.
+While a proposal's dispute window is open, anyone can `dispute` it by
+escrowing `dispute_bond` of the collateral token in the resolver. That
+freezes `finalize_signers`, `attest`, `cancel_proposal` and `expire_market`
+(`DisputeActive`) and escalates to the authority committed in the spec: the
+guardian (`settle_dispute`) or a `k`-of-`n` committee disjoint from the
+signers (`escalation_attest`). Upholding the proposal resolves to it and
+forfeits the bond to market-core's treasury; any other ruling resolves to the
+verdict (or voids for `Invalid`) and returns the bond. If nobody rules within
+`escalation_timeout` of the dispute, anyone may `expire_dispute`: the market is
+voided and the bond refunded. `guardian_void_market` during a dispute also
+refunds it. Bonds leave escrow only via the permissionless
+`claim_dispute_bond` (pull, so a payee that cannot receive cannot block
+settlement); the resolver's token balance always equals the bonds it still
+holds.
+
+```mermaid
+stateDiagram-v2
+    [*] --> SignersPending: register_disputable_spec
+    SignersPending --> SignersPending: attest (proposal at threshold)
+    SignersPending --> Finalized: finalize_signers (window elapsed)
+    SignersPending --> Disputed: dispute (window open, bond escrowed)
+    Disputed --> Finalized: settle_dispute / escalation_attest (k votes)
+    Disputed --> Finalized: expire_dispute (timeout, void, refund)
+    Disputed --> Finalized: guardian_void_market (void, refund)
+    SignersPending --> Expired: expire_market (no pending proposal)
+    Finalized --> [*]: claim_dispute_bond pays the payee
+```
+
+**Rewards, honestly:** a winning disputer only gets their bond back. The
+resolver holds no funds besides bonds, so there is nothing to pay a reward
+from until signers also post bonds (signer staking is separate work). The
+incentive to dispute is therefore protecting one's own position, not profit.
+
+Liveness: `resolution_deadline` is `close_time` + 30 days. After it anyone can
+call `expire_market`, which resolves the market if it still can be (valid
+price feed) and otherwise voids it through market-core, so collateral is never
+locked behind a missing reveal or a silent committee. See ADR 0001.
+
+The resolver never depends on `market-core`'s Rust crate — see
+[ADR 0002](adr/0002-cross-contract-calls.md) for why, and what that trades
+off.
+
+### treasury
+
+Holds the agents' pooled USDC and is the *only* path that spends it: an
+agent calls `agent_create_market` / `agent_buy` / `agent_sell` /
+`agent_buy_v2` / `agent_sell_v2`, the treasury checks its own
+per-trade/per-market/daily caps, then calls `market-core` itself as the
+trader/creator. This means the caps are a real on-chain limit on what the
+automated agent can deploy — an agent's own key calling `market-core`
+directly would just be trading its own separate funds, not bypassing a cap
+on the treasury's money. The `*_v2` twins forward the same caps plus
+market-core's deadline / limit-price bounds, so a revert from either layer
+leaves the caps unchanged (the whole invocation is atomic). The treasury's
+creator-side claims are split the same way the fees are: `collect_market_fees`
+sweeps the **protocol portion** to the treasury, while `agent_claim_lp_fees`
+claims the LP portion for markets the treasury created.
+
+Note: treasury `agent_split` / `agent_merge` forwarders are **not** yet
+implemented; agents split/merge via the treasury's own path in a follow-up.
+
+**Migration to a successor treasury.** The treasury has no upgrade path or
+config setters by design, so redeploying it (bug fix, cap change, agent
+rotation) means deploying a new contract. `set_successor(successor)`
+(admin) records where value may go and emits `SuccessorSet`; then
+`migrate_market(market_id)` (admin, **not** agent) moves the treasury's
+YES/NO position and, if it is still the LP, its LP ownership for one market
+to the successor — market by market, so the footprint stays bounded — and
+emits `MarketMigrated`. The auth model:
+
+- The agent has no path: both migration entrypoints are `require_admin`.
+- The destination is fixed to the configured `Successor` — `migrate_market`
+  takes no destination argument, so even a compromised agent key cannot
+  redirect value, and a compromised admin gains no new power over *user*
+  funds (it could already `withdraw`; migration only moves
+  treasury-owned positions, and the successor is visible on-chain via
+  `SuccessorSet`).
+- The treasury's calls to market-core's `transfer_position` / `transfer_lp`
+  are *direct* calls, so market-core's `require_auth` on the treasury's own
+  address is satisfied implicitly by the invoker rule — no
+  `authorize_as_current_contract` entry is needed (unlike the nested token
+  call in `authorize_token_pull`). This is proven by the
+  `pitfall_migrate_market_needs_only_admin_auth` test, which permits only
+  the admin's signature and no sub-invocations.
+
+A migrated market's `MarketExposure` on the successor starts at zero and the
+old treasury's entry is closed (`open = false`, amount preserved), so the
+successor's caps apply to its own future activity — acceptable because the
+cap is a per-deployment risk bound, not a market-level accounting value.
+Successor-side acceptance (`accept_migration`) is deliberately not
+implemented: it would record provenance only, and the events plus the
+successor's own exposure records are enough for an off-chain dashboard
+([wave-issue 08](wave-issues/08-treasury-exposure-dashboard.md)).
+
+The nested-authorization pitfall this design implies, and how it's handled,
+is documented at length in `contracts/treasury/src/lib.rs` (see
+`authorize_token_pull`) and exercised by
+`pitfall_agent_buy_requires_treasury_self_authorization_for_nested_transfer`
+in the same file's test module — a test that's been verified to fail
+without the fix and pass with it (see the commit history / docs/STATUS.md).
+
+### reasoning-registry
+
+An admin allow-list of agent addresses; a registered agent calls
+`publish_trace(agent, market_id, action, trace_hash, cid)` to record that a
+trace exists, returning a `trace_id`. `verify_trace(trace_id, candidate_hash)`
+is the check a paying subscriber (via `x402/`) or a frontend runs before
+trusting fetched trace content. Traces are also indexed per market
+(`market_trace_count` / `market_trace_at`) via a counter rather than an
+unbounded `Vec`, so the index never has an unbounded-growth storage cost.
+
+**Known limitation**: Soroban RPC only retains a short window of historical
+events. An indexer (Soroban events → Postgres, replayable) is required for
+any UI that wants to list traces/trades older than that window — this is
+one of the seeded `docs/wave-issues/`.
+
+## Off-chain pieces
+
+- **x402/**: an Express service selling reasoning traces for ~$0.01 via
+  `@x402/*`'s exact-payment Stellar scheme. Fetches the trace JSON (from
+  IPFS or `reasoning-registry`'s configured store), recomputes its hash, and
+  serves it only if the hash matches the on-chain record — see
+  `x402/registry-trace-repository.ts`.
+- **agents/**: `core/` is chain-agnostic (FPMM math including the
+  price-impact quoting used to size trades under a breaker cap, trace
+  building, strategy decisions with an optional impact clamp); `stellar/`
+  is the only part that knows about Soroban, wrapping the generated
+  bindings with a dry-run/live switch. The trader always quotes
+  (`quote_buy`) immediately before submitting and derives non-zero
+  `min_shares_out` / `limit_price_bps` bounds plus a deadline from it.
+  `core/fpmm.ts` also exposes `mergeMax(yes, no) = min(yes, no)`, mirroring
+  `math::merge_max` and `model/fpmm_model.py`, so frontends and agents can
+  offer "merge all" without re-deriving the bound.
+- **packages/bindings/**: generated TypeScript clients (`scripts/gen-bindings.sh`).
+
+## Known limitations (see docs/STATUS.md for the full, current list)
+
+- Testnet only; unaudited.
+- No indexer yet — anything needing historical events beyond RPC's
+  retention window has no on-chain-native way to query them.
+- Agent-vs-agent liquidity: nothing here stops multiple independent agent
+  deployments (this repo's or a fork's) from trading against the same
+  market-core markets; the treasury's caps bound one agent deployment's own
+  risk, not systemic market behavior.

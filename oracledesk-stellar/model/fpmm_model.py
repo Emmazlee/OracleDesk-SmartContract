@@ -121,6 +121,17 @@ def calc_sell(r_sold: int, r_other: int, collateral_out: int, fee_bps: int) -> S
     return SellQuote(shares_in, fee, gross, new_sold, new_other)
 
 
+def merge_max(yes: int, no: int) -> int:
+    """Largest amount of complete sets that can be merged from a position
+    holding `yes` YES shares and `no` NO shares: `min(yes, no)`.
+
+    Mirrors math.rs::merge_max and agents/core's fpmm.ts. Used by the
+    `quote_merge_max` view so frontends can offer "merge all"."""
+    if yes < 0 or no < 0:
+        raise MathError("invalid input")
+    return yes if yes < no else no
+
+
 def settle_value(kind: str, yes: int, no: int) -> int:
     if kind == "yes":
         return yes
@@ -129,15 +140,6 @@ def settle_value(kind: str, yes: int, no: int) -> int:
     if kind == "void":
         return (yes + no) // 2
     raise ValueError(f"unknown settlement kind {kind!r}")
-def merge_max(yes: int, no: int) -> int:
-    """Shares that can be merged back to collateral at par: min(yes, no).
-    Mirrors math.rs::merge_max; used by market-core's quote_merge_max view
-    and by frontends offering a "merge all" action."""
-    if yes < 0 or no < 0:
-        raise MathError("invalid input")
-    return yes if yes < no else no
-
-
 
 
 def gross_for_shares(r_sold: int, r_other: int, shares_in: int, fee_bps: int) -> int:
@@ -297,15 +299,6 @@ def _check_gross_for_shares_inverts_calc_sell(trials: int = 2_000, seed: int = 1
 def _check_void_never_overpays():
     assert settle_value("void", 3, 4) == 3
     assert settle_value("void", 5, 5) <= 5
-def _check_merge_max_known_values():
-    assert merge_max(0, 0) == 0
-    assert merge_max(5, 0) == 0
-    assert merge_max(0, 5) == 0
-    assert merge_max(3, 7) == 3
-    assert merge_max(7, 3) == 3
-    assert merge_max(1_000_000_000, 1_000_000_000) == 1_000_000_000
-
-
 
 
 def _check_price_after_maps_both_sides():
@@ -343,15 +336,26 @@ def _check_limits_boundary_and_symmetry():
     assert not buy_within_limit(1, 1, 0)
 
 
+def _check_merge_max_known_values():
+    """Pins the same worked examples as math.rs's merge_max tests."""
+    assert merge_max(0, 0) == 0
+    assert merge_max(5, 0) == 0
+    assert merge_max(0, 5) == 0
+    assert merge_max(5, 5) == 5
+    assert merge_max(3, 7) == 3
+    assert merge_max(7, 3) == 3
+    assert merge_max(MAX_SETS, MAX_SETS) == MAX_SETS
+
+
 def run_all():
     _check_known_values()
     _check_seed_opens_at_requested_probability()
     _check_k_never_decreases_and_round_trip_never_profits()
     _check_gross_for_shares_inverts_calc_sell()
     _check_void_never_overpays()
-    _check_merge_max_known_values()
     _check_price_after_maps_both_sides()
     _check_limits_boundary_and_symmetry()
+    _check_merge_max_known_values()
     print("fpmm_model: all property checks passed")
 
 

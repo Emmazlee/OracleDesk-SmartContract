@@ -265,29 +265,6 @@ export interface Client {
   sell_v2: ({trader, market_id, outcome, collateral_out, max_shares_in, limit_price_bps, deadline}: {trader: string, market_id: u64, outcome: Outcome, collateral_out: i128, max_shares_in: i128, limit_price_bps: u32, deadline: u64}, options?: MethodOptions) => Promise<AssembledTransaction<Result<i128>>>
 
   /**
-   * Construct and simulate a split transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Mints `amount` YES and `amount` NO shares to `holder` for `amount`
-   * collateral. Does not touch the pool reserves or fees.
-   * 
-   * Requires `MarketStatus::Open`, `now < close_time` and the contract to
-   * be unpaused. After close, splitting has no purpose and opens timing
-   * games, so it is rejected.
-   */
-  split: ({holder, market_id, amount}: {holder: string, market_id: u64, amount: i128}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
-
-  /**
-   * Construct and simulate a merge transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Burns `amount` YES and `amount` NO shares from `holder` and returns
-   * `amount` collateral. Does not touch the pool reserves or fees.
-   * 
-   * Requires `MarketStatus::Open`, but is allowed after `close_time` and
-   * while paused: merging is a pure exit that cannot harm the pool, and
-   * letting users de-risk while the resolver is slow is valuable. This
-   * asymmetry with `split` is intentional.
-   */
-  merge: ({holder, market_id, amount}: {holder: string, market_id: u64, amount: i128}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
-
-  /**
    * Construct and simulate a get_price transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
    * Spot price of `outcome` in bps (0..=10_000). YES + NO ~ 10_000.
    */
@@ -314,13 +291,6 @@ export interface Client {
    * Shares a `sell` for exactly `collateral_out` would consume right now.
    */
   quote_sell: ({market_id, outcome, collateral_out}: {market_id: u64, outcome: Outcome, collateral_out: i128}, options?: MethodOptions) => Promise<AssembledTransaction<Result<i128>>>
-
-  /**
-   * Construct and simulate a quote_merge_max transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * The maximum amount `holder` could merge right now: the smaller of
-   * their YES and NO balances. Read-only convenience for "merge all".
-   */
-  quote_merge_max: ({market_id, holder}: {market_id: u64, holder: string}, options?: MethodOptions) => Promise<AssembledTransaction<i128>>
 
   /**
    * Construct and simulate a set_paused transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
@@ -443,6 +413,26 @@ export interface Client {
   claim_pool_remainder: ({market_id}: {market_id: u64}, options?: MethodOptions) => Promise<AssembledTransaction<Result<i128>>>
 
   /**
+   * Construct and simulate a split transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Locks `amount` collateral and mints `amount` YES + `amount` NO to `holder`.
+   * Requires `MarketStatus::Open`, `now < close_time`, and not paused.
+   */
+  split: ({holder, market_id, amount}: {holder: string, market_id: u64, amount: i128}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
+   * Construct and simulate a merge transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Burns `amount` YES + `amount` NO from `holder` and returns `amount` collateral.
+   * Requires `MarketStatus::Open`; allowed after `close_time` and while paused.
+   */
+  merge: ({holder, market_id, amount}: {holder: string, market_id: u64, amount: i128}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
+   * Construct and simulate a quote_merge_max transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Maximum amount `holder` could merge right now (`min(yes, no)`).
+   */
+  quote_merge_max: ({market_id, holder}: {market_id: u64, holder: string}, options?: MethodOptions) => Promise<AssembledTransaction<Result<i128>>>
+
+  /**
    * Construct and simulate a set_protocol_fee_share_bps transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
    * Affects markets created after the call; existing markets keep the
    * split they snapshotted at creation.
@@ -505,9 +495,6 @@ export class Client extends ContractClient {
         "AAAAAAAAAEVTaGFyZXMgYSBgc2VsbGAgZm9yIGV4YWN0bHkgYGNvbGxhdGVyYWxfb3V0YCB3b3VsZCBjb25zdW1lIHJpZ2h0IG5vdy4AAAAAAAAKcXVvdGVfc2VsbAAAAAAAAwAAAAAAAAAJbWFya2V0X2lkAAAAAAAABgAAAAAAAAAHb3V0Y29tZQAAAAfQAAAAB091dGNvbWUAAAAAAAAAAA5jb2xsYXRlcmFsX291dAAAAAAACwAAAAEAAAPpAAAACwAAAAM=",
         "AAAAAAAAAAAAAAAKc2V0X3BhdXNlZAAAAAAAAQAAAAAAAAAGcGF1c2VkAAAAAAABAAAAAQAAA+kAAAACAAAAAw==",
         "AAAAAAAAAQpBbnlvbmUgY2FuIG1vdmUgYWNjcnVlZCBwcm90b2NvbCBmZWVzIHRvIHRoZSBtYXJrZXQncyBmZWUgcmVjaXBpZW50LgoKU2VuZHMgdG8gdGhlIHJlY2lwaWVudCBzbmFwc2hvdHRlZCBpbiBgRmVlVGVybXNgIGF0IGNyZWF0aW9uLiBNYXJrZXRzCmNyZWF0ZWQgYmVmb3JlIGBGZWVUZXJtc2AgZXhpc3RlZCBoYXZlIG5vbmUgYW5kIGtlZXAgdGhlIGxlZ2FjeQpiZWhhdmlvdXI6IHRoZSBgRGF0YUtleTo6VHJlYXN1cnlgIG9mIHRoZSBtb21lbnQgb2YgdGhlIHN3ZWVwLgAAAAAACnN3ZWVwX2ZlZXMAAAAAAAEAAAAAAAAACW1hcmtldF9pZAAAAAAAAAYAAAABAAAD6QAAAAsAAAAD",
-        "AAAAAAAAAAAAAAAFc3BsaXQAAAAAAAADAAAAAAAAAAZob2xkZXIAAAAAABMAAAAAAAAACW1hcmtldF9pZAAAAAAAAAYAAAAAAAAABmFtb3VudAAAAAAACwAAAAEAAAPpAAAAAgAAAAM=",
-        "AAAAAAAAAAAAAAAFbWVyZ2UAAAAAAAADAAAAAAAAAAZob2xkZXIAAAAAABMAAAAAAAAACW1hcmtldF9pZAAAAAAAAAYAAAAAAAAABmFtb3VudAAAAAAACwAAAAEAAAPpAAAAAgAAAAM=",
-        "AAAAAAAAAAAAAAAOcXVvdGVfbWVyZ2VfbWF4AAAAAAACAAAAAAAAAAltYXJrZXRfaWQAAAAAAAAGAAAAAAAAAAZob2xkZXIAAAAAABMAAAABAAAACw==",
         "AAAAAAAAAPVUcnVlIHdoZW4gYSBgYnV5YCBvZiBgY29sbGF0ZXJhbF9pbmAgd291bGQgYmUgcmVqZWN0ZWQgYnkgdGhlCm1hcmtldCdzIGJyZWFrZXJzIHJpZ2h0IG5vdy4gUmVhZC1vbmx5OiBuZXZlciB3cml0ZXMgYmFuZCBzdGF0ZSwgc28Kb24gYSBmcmVzaCBsZWRnZXIgdGhlIHJlZmVyZW5jZSBpcyB0YWtlbiBhcyB0aGUgY3VycmVudCBwcmljZSDigJQgdGhlCnNhbWUgdmFsdWUgYSBzdWJzZXF1ZW50IHJlYWwgdHJhZGUgd291bGQgdXNlLgAAAAAAAAp3b3VsZF90cmlwAAAAAAADAAAAAAAAAAltYXJrZXRfaWQAAAAAAAAGAAAAAAAAAAdvdXRjb21lAAAAB9AAAAAHT3V0Y29tZQAAAAAAAAAADWNvbGxhdGVyYWxfaW4AAAAAAAALAAAAAQAAA+kAAAABAAAAAw==",
         "AAAAAAAAAL9UcmFuc2ZlcnMgdGhlIHNpbmdsZSBMUCByb2xlICh0aGUgcmlnaHQgdG8gYGNsYWltX3Bvb2xfcmVtYWluZGVyYCBhbmQKYGNsYWltX2xwX2ZlZXNgKSB0byBgbmV3X2NyZWF0b3JgLiBPbmx5IHVudGlsIHRoZSByZW1haW5kZXIgaGFzIGJlZW4KY2xhaW1lZDsgYWZ0ZXIgdGhhdCB0aGUgcm9sZSBoYXMgbm8gcmVtYWluaW5nIHZhbHVlLgAAAAALdHJhbnNmZXJfbHAAAAAAAgAAAAAAAAAJbWFya2V0X2lkAAAAAAAABgAAAAAAAAALbmV3X2NyZWF0b3IAAAAAEwAAAAEAAAPpAAAAAgAAAAM=",
         "AAAAAAAAAEFJbnZhbGlkIG9yIHVucmVzb2x2YWJsZSBtYXJrZXQuIEFsbG93ZWQgYW55IHRpbWUgYmVmb3JlIGZpbmFsaXR5LgAAAAAAAAt2b2lkX21hcmtldAAAAAABAAAAAAAAAAltYXJrZXRfaWQAAAAAAAAGAAAAAQAAA+kAAAACAAAAAw==",
@@ -535,14 +522,11 @@ export class Client extends ContractClient {
         redeem: this.txFromJSON<Result<i128>>,
         resolve: this.txFromJSON<Result<void>>,
         sell_v2: this.txFromJSON<Result<i128>>,
-        split: this.txFromJSON<Result<void>>,
-        merge: this.txFromJSON<Result<void>>,
         get_price: this.txFromJSON<Result<u32>>,
         quote_buy: this.txFromJSON<Result<i128>>,
         get_config: this.txFromJSON<Result<Config>>,
         get_market: this.txFromJSON<Result<Market>>,
         quote_sell: this.txFromJSON<Result<i128>>,
-        quote_merge_max: this.txFromJSON<i128>,
         set_paused: this.txFromJSON<Result<void>>,
         sweep_fees: this.txFromJSON<Result<i128>>,
         would_trip: this.txFromJSON<Result<boolean>>,
@@ -560,6 +544,9 @@ export class Client extends ContractClient {
         set_default_breaker: this.txFromJSON<Result<void>>,
         set_default_fee_bps: this.txFromJSON<Result<void>>,
         claim_pool_remainder: this.txFromJSON<Result<i128>>,
+        split: this.txFromJSON<Result<void>>,
+        merge: this.txFromJSON<Result<void>>,
+        quote_merge_max: this.txFromJSON<Result<i128>>,
         set_protocol_fee_share_bps: this.txFromJSON<Result<void>>
   }
 }

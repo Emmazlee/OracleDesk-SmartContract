@@ -112,21 +112,22 @@ export function calcSell(
   return { sharesIn, fee, gross, newReserveSold: newSold, newReserveOther: newOther };
 }
 
+/**
+ * Maximum number of complete sets a holder can merge: `min(yes, no)`.
+ * Mirrors math.rs::merge_max and model/fpmm_model.py::merge_max so
+ * frontends can offer a "merge all" button without re-deriving it.
+ */
+export function mergeMax(yes: bigint, no: bigint): bigint {
+  if (yes < 0n || no < 0n) throw new MathError("invalid input");
+  return yes < no ? yes : no;
+}
+
 export type Settlement = "yes" | "no" | "void";
 
 export function settleValue(kind: Settlement, yes: bigint, no: bigint): bigint {
   if (kind === "yes") return yes;
   if (kind === "no") return no;
   return (yes + no) / 2n;
-}
-
-/**
- * Maximum complete sets that can be merged from a position: the smaller of
- * the two legs. Mirrors math.rs::merge_max and model/fpmm_model.py.
- */
-export function mergeMax(yes: bigint, no: bigint): bigint {
-  if (yes < 0n || no < 0n) throw new MathError("invalid input");
-  return yes < no ? yes : no;
 }
 
 /**
