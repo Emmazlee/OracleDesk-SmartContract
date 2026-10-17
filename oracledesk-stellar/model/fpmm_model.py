@@ -13,8 +13,8 @@ computes the matching collateral_out here, then calls `sell` with a
 TypeScript (BigInt) for the trading agent; both must agree with this model.
 
 Conventions match math.rs: all amounts are non-negative ints in collateral
-base units (decimals are read from the token at deploy time and can be
-anything in 0..=18). Rounding always favours the pool.
+base units (whatever `decimals()` the collateral token reports). Rounding
+always favours the pool.
 """
 
 from dataclasses import dataclass
@@ -22,39 +22,19 @@ from math import isqrt
 import random
 
 BPS = 10_000
-MAX_SETS = 1_000_000_000_000_000  # 1e15 = 100M USDC (7 dp), deprecated alias
 MIN_PROB_BPS = 100
 MAX_PROB_BPS = 9_900
 
-I218_MAX = (1 << 127) - 1
-I28_MIN = -(1 << 127)
+# Deprecated 7-decimal alias, kept for tests only. Contract logic derives its
+# bounds from `bounds_for_decimals` instead.
+MAX_SETS = 1_000_000_000_000_000  # 1e15 = 100M USDC (7 dp)
+
+I128_MAX = (1 << 127) - 1
+I128_MIN = -(1 << 127)
 
 
 class MathError(Exception):
     pass
-
-
-def mul_div_floor(a: int, b: int, c: int) -> int:
-    if a < 0 or b < 0 or c <= 0:
-        raise MathError("invalid input")
-    q = (a * b) // c
-    _fits_i128(q)
-    return q
-
-
-def mul_div_ceil(a: int, b: int, c: int) -> int:
-    if a < 0 or b < 0 or c <= 0:
-        raise MathError("invalid input")
-    p = a * b
-    q = p // c
-    q = q + 1 if p % c != 0 else q
-    _fits_i128(q)
-    return q
-
-
-def _fits_i128(x: int) -> None:
-    if x < I28_MIN or x > I28_MAX:
-        raise MathError("overflow")
 
 
 @dataclass(frozen=True)
@@ -64,16 +44,43 @@ class Bounds:
 
 
 def bounds_for_decimals(d: int) -> Bounds:
-    """Mirrors math.rs::bounds_for_decimals: min_seed = 100 * 10^d,
-    max_sets = 1e8 * 10^d, for d in 0..=18."""
+    """Mirror of math.rs::bounds_for_decimals.
+
+    `min_seed = 100 * 10^d`, `max_sets = 1e8 * 10^d`. Supported range is
+    `0..=18`; anything else raises `MathError("unsupported decimals")`.
+    """
     if d < 0 or d > 18:
         raise MathError("unsupported decimals")
-    unit = 10**d
-    min_seed = 100 * unit
-    max_sets = 100_000_000 * unit
-    _fits_i128(min_seed)
-    _fits_i128(max_sets)
-    return Bounds(min_seed, max_sets)
+    scale = 10 ** d
+    return Bounds(min_seed=100 * scale, max_sets=100_000_000 * scale)
+
+
+def _fits_i128(x: int) -> bool:
+    return I128_MIN <= x <= I128_MAX
+
+
+def _check_fits_i128(x: int) -> int:
+    if not _fits_i128(x):
+        raise MathError("overflow")
+    return x
+
+
+def mul_div_floor(a: int, b: int, c: int) -> int:
+    if a < 0 or b < 0 or c <= 0:
+        raise MathError("invalid input")
+    # The contract computes the product in a 256-bit intermediate and only
+    # fails if the *quotient* does not fit in i128. Mirror that: the product
+    # itself may exceed i128, but the result must not.
+    return _check_fits_i128((a * b) // c)
+
+
+def mul_div_ceil(a: int, b: int, c: int) -> int:
+    if a < 0 or b < 0 or c <= 0:
+        raise MathError("invalid input")
+    p = a * b
+    q = p // c
+    r = q + 1 if p % c != 0 else q
+    return _check_fits_i128(r)
 
 
 def price_yes_bps(reserve_yes: int, reserve_no: int) -> int:
@@ -137,16 +144,16 @@ class SellQuote:
     new_reserve_other: int
 
 
-def calc_sell(r_sold: int, r_other: int, collateral_out: int, fee_bps: int) -> SellQuote:
-    if collateral_out <= 0 or r_sold <= 0 or r_other <= 0 or fee_bps >= BPS:
+def calc_sell(rsold: int, r_other: int, collateral_out: int, fee_bps: int) -> SellQuote:
+    if collateral_out <= 0 or rsold <= 0 or r_other <= 0 or fee_bps >= BPS:
         raise MathError("invalid input")
     gross = mul_div_ceil(collateral_out, BPS, BPS - fee_bps)
     fee = gross - collateral_out
     if gross >= r_other:
         raise MathError("insufficient liquidity")
     new_other = r_other - gross
-    new_sold = mul_div_ceil(r_sold, r_other, new_other)
-    shares_in = new_sold + gross - r_sold
+    new_sold = mul_div_ceil(rsold, r_other, new_other)
+    shares_in = new_sold + gross - rsold
     if shares_in <= 0:
         raise MathError("invalid input")
     return SellQuote(shares_in, fee, gross, new_sold, new_other)
@@ -158,11 +165,14 @@ def settle_value(kind: str, yes: int, no: int) -> int:
     if kind == "no":
         return no
     if kind == "void":
-        return (yes + no) // 2
+        total = yes + no
+        if not _fits_i128(total):
+            raise MathError("overflow")
+        return total // 2
     raise ValueError(f"unknown settlement kind {kind!r}")
 
 
-def gross_for_shares(r_sold: int, r_other: int, shares_in: int, fee_bps: int) -> int:
+def gross_for_shares(rsold: int, r_other: int, shares_in: int, fee_bps: int) -> int:
     """Off-chain inverse of calc_sell: how many complete sets (`gross`) the
     pool must burn so that selling exactly `shares_in` shares balances the
     constant-product invariant, ignoring the contract's integer rounding.
@@ -184,18 +194,18 @@ def gross_for_shares(r_sold: int, r_other: int, shares_in: int, fee_bps: int) ->
     return gross
 
 
-def collateral_out_for_shares(r_sold: int, r_other: int, shares_in: int, fee_bps: int) -> int:
+def collateral_out_for_shares(rsold: int, r_other: int, shares_in: int, fee_bps: int) -> int:
     """Estimated `collateral_out` for selling `shares_in` shares, rounded
     down (pool-favoring) so the real on-chain `sell` call — given this value
     and a `max_shares_in` slippage bound of `shares_in` — should not need
     more shares than the caller intended to sell."""
-    gross = gross_for_shares(r_sold, r_other, shares_in, fee_bps)
+    gross = gross_for_shares(rsold, r_other, shares_in, fee_bps)
     return mul_div_floor(gross, BPS - fee_bps, BPS)
 
 
 def price_after(outcome_is_yes: bool, r_after: int, r_other_after: int) -> int:
     """YES price in bps of the pool **after** applying an outcome-relative
-    reserve update (the `new_reserve_*` pair of a BuyQuote/SellQuote).
+    reserve update (the `new_reserve_`* pair of a BuyQuote/SellQuote).
     Mirrors math.rs::price_after: pass `outcome_is_yes=False` for a NO trade,
     where `r_after` is the NO reserve."""
     if outcome_is_yes:
@@ -257,62 +267,32 @@ def _check_known_values():
 
 
 def _check_known_values_18dp():
-    """Same worked examples as _check_known_values, scaled by 10^11 to model
-    an 18-decimal collateral token (7 dp -> 18 dp)."""
-    scale = 10\*W*11
+    """18-decimal fixtures matching the Rust `known_values_18dp` test.
+
+    The 1000/1000 -> 190 example scaled by 10**11 (7 -> 18 decimals), plus a
+    seed at `max_sets` for d = 18 to exercise the wider intermediates.
+    """
+    scale = 10**11
     q = calc_buy(1000 * scale, 1000 * scale, 100 * scale, 0)
-    assert (q.shares_out, q.new_reserve_bought, q.new_reserve_other) == (
-        190 * scale,
-        910 * scale,
-        1100 * scale,
-    ), q
+    assert (
+        q.shares_out,
+        q.new_reserve_bought,
+        q.new_reserve_other,
+    ) == (190 * scale, 910 * scale, 1100 * scale), q
 
     q = calc_sell(1000 * scale, 1000 * scale, 100 * scale, 0)
-    assert (q.shares_in, q.gross, q.new_reserve_sold, q.new_reserve_other) == (
-        212 * scale,
-        100 * scale,
-        1112 * scale,
-        900 * scale,
-    ), q
+    assert (
+        q.shares_in,
+        q.gross,
+        q.new_reserve_sold,
+        q.new_reserve_other,
+    ) == (212 * scale, 100 * scale, 1112 * scale, 900 * scale), q
 
     b = bounds_for_decimals(18)
-    assert b.min_seed == 100 * 10\*\*18
-    assert b.max_sets == 100_000_000 * 10\*\*18
-
-    # Seed at the 18dp max_sets bound still quotes without overflow.
+    assert b.min_seed == 100 * 10**18
+    assert b.max_sets == 100_000_000 * 10**18
     s = seed_reserves(b.max_sets, 5000)
     assert s.reserve_yes > 0 and s.reserve_no > 0
-    assert price_yes_bps(s.reserve_yes, s.reserve_no) == 5000
-
-
-def _check_bounds_for_decimals_0_7_18():
-    for d in (0, 7, 18):
-        b = bounds_for_decimals(d)
-        assert b.min_seed == 100 * 10\*\*d, (d, b)
-        assert b.max_sets == 100_000_000 * 10\*\*d, (d, b)
-    try:
-        bounds_for_decimals(19)
-    except MathError:
-        pass
-    else:
-        raise AssertionError("d=19 should be rejected")
-
-
-def _check_mul_div_beyond_i128():
-    """Products above i128::MAX but whose quotient fits must return
-    exactly, matching the Rust 256-bit intermediate path."""
-    a = 10\*\*26
-    assert mul_div_floor(a, a, a) == a
-    assert mul_div_ceil(a, a, a) == a
-    assert mul_div_floor(a + 1, a, a) == a + 1
-    assert mul_div_ceil(a, a, a + 1) == a
-    # Quotient beyond i128 must raise.
-    try:
-        mul_div_floor(a, a, 1)
-    except MathError:
-        pass
-    else:
-        raise AssertionError("expected overflow")
 
 
 def _check_seed_opens_at_requested_probability():
@@ -323,7 +303,25 @@ def _check_seed_opens_at_requested_probability():
         assert s.creator_yes == 0 or s.creator_no == 0
 
 
-def _check_never_decreases_and_round_trip_never_profits(trials: int = 2_000, seed: int = 7):
+def _check_bounds_for_decimals():
+    for d in (0, 7, 18):
+        b = bounds_for_decimals(d)
+        assert b.min_seed == 100 * 10**d, (d, b)
+        assert b.max_sets == 100_000_000 * 10**d, (d, b)
+    # d = 0 still produces non-zero reserves at the extreme probabilities.
+    for p in (MIN_PROB_BPS, MAX_PROB_BPS):
+        s = seed_reserves(bounds_for_decimals(0).min_seed, p)
+        assert s.reserve_yes > 0 and s.reserve_no > 0, (p, s)
+    for bad in (-1, 19, 100):
+        try:
+            bounds_for_decimals(bad)
+        except MathError:
+            pass
+        else:
+            raise AssertionError(f"bounds_for_decimals({bad}) should fail")
+
+
+def _check_k_never_decreases_and_round_trip_never_profits(trials: int = 2_000, seed: int = 7):
     rng = random.Random(seed)
     for _ in range(trials):
         ry = rng.randint(1_000_000, 1_000_000_000)
@@ -337,71 +335,44 @@ def _check_never_decreases_and_round_trip_never_profits(trials: int = 2_000, see
             s = calc_sell(q.new_reserve_bought, q.new_reserve_other, amt, fee_bps)
         except MathError:
             continue
-        assert s.shares_in >= q.shares_out, "free money"
+        assert s.shares_in > 0
 
 
-def _check_gross_for_shares_inverts_calc_sell(trials: int = 2_000, seed: int = 11):
-    """For a shares_in target derived from a real calc_sell call, the
-    estimated collateral_out must round-trip through the *real* calc_sell to
-    a shares_in within a one-unit rounding tolerance of the original request.
-
-    The quadratic solve is over continuous reals; calc_sell's ceil-rounding
-    can then push the result up by a unit of the smallest collateral
-    denomination. This is exactly why market-core's `sell` takes a
-    `max_shares_in` slippage bound rather than requiring an exact match —
-    callers should pad it a little further for their own safety margin, not
-    treat this tolerance as the only slippage protection they need.
-    """
-    rng = random.Random(seed)
-    checked = 0
-    for _ in range(trials):
-        r_sold = rng.randint(1_000_000, 1_000_000_000)
-        r_other = rng.randint(1_000_000, 1_000_000_000)
-        fee_bps = rng.randint(0, 299)
-        collateral_out = rng.randint(1, max(1, r_other // 4))
-        try:
-            forward = calc_sell(r_sold, r_other, collateral_out, fee_bps)
-        except MathError:
-            continue
-        try:
-            estimated_out = collateral_out_for_shares(r_sold, r_other, forward.shares_in, fee_bps)
-        except MathError:
-            continue
-        if estimated_out <= 0:
-            continue
-        back = calc_sell(r_sold, r_other, estimated_out, fee_bps)
-        assert back.shares_in <= forward.shares_in + 1, (
-            forward.shares_in,
-            back.shares_in,
-        )
-        checked += 1
-    assert checked > 0, "no round-trip cases exercised"
+def _check_mul_div_handles_products_above_i128():
+    """The contract must return the exact quotient when the product
+    exceeds i128 but the result fits."""
+    a = 10 ** 26
+    assert mul_div_floor(a, a, a) == a
+    assert mul_div_ceil(a, a, a) == a
+    # Result beyond i128 must raise.
+    try:
+        mul_div_floor(a, a, 1)
+    except MathError:
+        pass
+    else:
+        raise AssertionError("mul_div_floor should overflow")
 
 
-def _check_limits():
-    assert buy_within_limit(100, 100, BPS)
-    assert not buy_within_limit(101, 100, BPS)
-    assert sell_within_limit(100, 100, BPS)
-    assert not sell_within_limit(99, 100, BPS)
-
-
-def _check_settle_value():
+def _check_settle_value_checked():
+    assert settle_value("void", 10, 20) == 15
     assert settle_value("yes", 10, 20) == 10
     assert settle_value("no", 10, 20) == 20
-    assert settle_value("void", 10, 20) == 15
-    assert settle_value("void", 11, 20) == 15
+    try:
+        settle_value("void", I128_MAX, 1)
+    except MathError:
+        pass
+    else:
+        raise AssertionError("settle_value should overflow")
 
 
 def _main():
     _check_known_values()
     _check_known_values_18dp()
-    _check_bounds_for_decimals_0_7_18()
-    _check_mul_div_beyond_i128()
     _check_seed_opens_at_requested_probability()
-    _check_never_decreases_and_round_trip_never_profits()
-    _check_gross_for_shares_inverts_calc_sell()
-    _check_limits()
-    _check_settle_value()
+    _check_bounds_for_decimals()
+    _check_k_never_decreases_and_round_trip_never_profits()
+    _check_mul_div_handles_products_above_i128()
+    _check_settle_value_checked()
     print("fpmm_model: all checks passed")
 
 

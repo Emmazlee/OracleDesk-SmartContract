@@ -1,7 +1,8 @@
 # Status
 
-Last updated: 2026-09-21 (contributor addenda 2026-10-16 and 2026-10-17 —
-see the first section after this intro). This is the honest account of what
+Last updated: 2026-09-21 (contributor addenda 2026-10-16, 2026-10-17,
+2026-10-18, 2026-10-19, 2026-10-20 and 2026-10-21 — see the first section after this intro). This is the honest
+account of what
 works, what's unverified, and what's left. Everything marked "verified" was
 demonstrated with real command output in the session that wrote this file,
 not asserted.
@@ -13,8 +14,8 @@ trade deadlines and limit prices (#12), and transferable positions/LP plus
 treasury migration (#13) are implemented on
 `feat/fees-breakers-bounds-and-transfers` (PR against `develop`; design
 notes in `docs/architecture.md`). Verified in the contributor session:
-`cargo fmt --check`, `cargo clippy --workspace --all-targets - -D warnings`
-[and `cargo test --workspace` (now **87** tests: market-core 54, resolver 6,
+`cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`
+and `cargo test --workspace` (now **87** tests: market-core 54, resolver 6,
 reasoning-registry 6, treasury 21 — superseding the 40-test count below),
 `python3 model/fpmm_model.py`, agents (36 tests) and x402 (5 tests) with the
 regenerated bindings, `make build` and `make bindings` with only the
@@ -29,53 +30,66 @@ The work above landed on `develop` as merge commit `581a3ec` (PR #153,
 merged 2026-10-16), so the feature-branch reference above is historical and
 `develop` is the source of truth for #8, #10, #12 and #13.
 
-## Contributor addendum: decimals-aware collateral
+## Contributor addendum: 2026-10-18
 
-market-core is now decimals-aware. The collateral token's `decimals()` is read
-once in `__constructor` and stored under `DataKey::Decimals` (instance). The
-supported range is `0 ..= 18`; anything higher panics with the new
-`Error::UnsupportedDecimals = 19`. `GetConfig` now returns `decimals` in `Config`,
-so the XDR shape of `Config` changed — consumers must re-sync their generated
-bindings.
+Decimals-aware market-core (collateral of any decimals, 0..=18) is
+implemented on a branch targeting `develop`. `__constructor` now reads
+`decimals()` from the collateral SEP-41 token, rejects values above 18 with
+`Error::UnsupportedDecimals` (#19), and stores the value under
+`DataKey::Decimals`; `Config` gained a `decimals: u32` field, so the XDR
+shape changed and all four bindings packages were regenerated. The economic
+bounds are no longer the hardcoded 7-decimal `MIN_SEED` / `MAX_SETS`
+constants: `math::bounds_for_decimals(d)` derives `min_seed = 100 * 10^d`
+and `max_sets = 1e8 * 10^d`, and contract logic reads them via
+`Self::bounds(&env)`. `math::MAX_SETS` is kept only as a `#[deprecated]`
+7-decimal alias for tests. `mul_div_floor` / `mul_div_ceil` now use a
+no_std `u128x2` (hi/lo) widening multiply and divide, so a result that fits
+in `i128` is returned exactly even when the `a * b` intermediate exceeds
+`i128::MAX` (e.g. 18-decimal markets with `max_sets = 1e26`). Rounding
+directions are unchanged, proven by a differential test against the legacy
+implementation on the legacy domain. `settle_value` now uses `checked_add`
+and returns `Result`, propagated by `redeem` and `claim_pool_remainder`.
+The Python (`model/fpmm_model.py`) and TypeScript (`agents/core/fpmm.ts`)
+mirrors gained `bounds_for_decimals` / `boundsForDecimals` and explicit
+`i128` range checks so they fail where the contract would, plus 18-decimal
+fixtures matching the Rust outputs. `math.rs` remains `soroban_sdk`-free
+and its tests run natively. **Not** verified: no testnet redeploy with an
+18-decimal collateral; the vendored `market_core.wasm` copies in
+`contracts/resolver` and `contracts/treasury` were refreshed and their
+suites re-run, but only against a 7-decimal Stellar asset fixture plus a
+new 18-decimal mock token in tests.
 
-The economic bounds are derived from decimals instead of hardcoded at 7
-decimals:
+### Follow-up: 2026-10-19
 
-- `min_seed = 100 * 10^d` (100 tokens)
-- `max_sets = 1e8 * 10^d` (100M tokens)
+The decimals-aware work above is on `develop`. `docs/architecture.md` and
+this file describe the derived bounds (`min_seed = 100 * 10^d`,
+`max_sets = 1e8 * 10^d`, `d` in `0..=18`) and the 256-bit `mul_div`
+intermediates. No 18-decimal collateral has been deployed to testnet yet;
+the only live deployment still uses the self-issued 7-decimal test USDC.
 
-The contract reads these through `Self::bounds(&env)` within
-`math::bounds_for_decimals`. The old `math::MAX_SETS` constant is kept only as a
-`[deprecated]` 7-decimal alias for tests and is no longer used by contract logic.
+### Follow-up: 2026-10-20
 
-`math::mul_div_floor` / `math::mul_div_ceil` now compute their products through
-a 256-bit intermediate (`mod wide`, a no-std `u128x2` implementation), so a
-result that fits in `i128` is always returned exactly. Rounding directions
-unchanged and covered by a differential test against the legacy
-implementation. The module remains Env-free and its tests run natively.
+CI syntax check on `agents/core/fpmm.ts` was failing (TS1434/TS1005) after
+the decimals-aware changes; the file was repaired without touching the
+`boundsForDecimals` / `I128_MAX` logic or the 18-decimal fixtures. The
+`cargo test --workspace`, `make lint`, `python3 model/fpmm_model.py` and
+`agents` `npm test` / `npm run build` commands remain the acceptance gate.
 
-The constants and the comment in `math.rs` that justified the old i128 products
-by a 1e30 headroom argument are gone; correctness no longer depends on the
-decimals of the collateral.
+### Follow-up: 2026-10-21
 
-`settle_value` now uses checked addition and returns `Result`; `redeem` and
-`claim_pool_remainder` propagate the error.
-
-The Python model (`model/fpmm_model.py`) and the TypeScript mirror
-(`agents/core/fpmm.ts`) now expose `bounds_for_decimals` / `boundsForDecimals`
-with an explicit `i128` fit check in the multiply-divide helpers, and 18-decimal
-fixtures that match the contract outputs exactly.
-
-The vendored `market_core.wasm` copies in `contracts/resolver` and
-`contracts/treasury` were refreshed, and all four bindings packages were
-regenerated. The CPU instruction delta for `buy` at 7 vs. 18 decimals is reported
-in the PR description.
+The `agents/core/fpmm.ts` syntax repair from 2026-10-20 left the file in a
+state where the local syntax check still failed (TS1434/TS1005). The
+duplicate/partial declaration introduced during that repair was removed and
+the file now parses cleanly; the `boundsForDecimals` / `I128_MAX` logic and
+the 18-decimal fixtures are unchanged. `agents` `npm test` / `npm run build`
+pass again. No contract, model, or bindings changes were made in this
+follow-up.
 
 ## Phase 0: recon and safety
 
 **Toolchain** (as installed in the environment this was built in):
 rustc 1.94.1, cargo 1.94.1, Stellar CLI 27.1.0, soroban-sdk 27.0.6, Node
-v24.13.1, npm 11.8.0, Python 3.14.5, jq 1.7. `soroban` (the old ICL name),
+v24.13.1, npm 11.8.0, Python 3.14.5, jq 1.7. `soroban` (the old CLI name),
 `gitleaks`, and `trufflehog` were not installed.
 
 **Inventory of inherited code** (`soroban/` in the parent repo, moved into
@@ -85,13 +99,14 @@ implemented (added — see below). `reasoning-registry`, `resolver`, and
 `treasury` all had substantive implementations already, not stubs, but
 `treasury`'s "trading" functions (`authorize_trade`/`close_trade`) were
 advisory-only bookkeeping that never actually called `market-core` — a real
-gap, since it meant the on-chain caps didn't cap anything real. Rewritten*
-— see below.
+gap, since it meant the on-chain caps didn't cap anything real. Rewritten —
+see below.
 
-**Secrets scan** : manual regex over the whole `OracleDesk-SmartContract`
+**Secrets scan**: manual regex over the whole `OracleDesk-SmartContract`
 working tree for `PRIVATE_KEY`/`SECRET`/PEM headers/Stellar seed shape
 (`S[A-Z2-7]{55}`), plus `git log -p --all` over the same patterns. No real
-secrets found — the only hits were env var *names* (e.g. `DEPLOYER_PRIVATE_KEY= `in the parent repo's README, referencing the Arc-era Foundry deploy flow,
+secrets found — the only hits were env var *names* (e.g. `DEPLOYER_PRIVATE_KEY=`
+in the parent repo's README, referencing the Arc-era Foundry deploy flow,
 not this repo). One `.env` file exists at `oracledesk-contracts/.env`
 (the sibling Arc-era repo, not this one); confirmed gitignored via
 `git check-ignore`, never read, never committed. No `.env` files exist
@@ -103,23 +118,23 @@ anywhere under `oracledesk-stellar/`.
 |---|---|---|
 | 0. Recon & safety | ✅ Done | This section |
 | 1. Scaffold | ✅ Done | `contracts/`, `agents/`, `x402/`, `packages/bindings/`, `scripts/`, `docs/` all populated per the target layout; no Solidity/Foundry/Polymarket-execution/Circle code anywhere in this tree |
-| 2. Contracts compile + test | ✅ Done | `cargo fmt --check`, `cargo clippy --workspace --all-targets - -D warnings`, `cargo test --workspace` (40 tests) all exit 0 — rerun as the last step before writing this file |
+| 2. Contracts compile + test | ✅ Done | `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace` (40 tests) all exit 0 — rerun as the last step before writing this file |
 | 3. Testnet deploy | ✅ Done | All 4 contracts + a self-issued test USDC deployed to testnet; addresses in `deployments/testnet.json`; `scripts/deploy-testnet.sh` re-run and confirmed idempotent (detects everything already deployed, no-ops) |
 | 4. x402 service | ✅ Code done, ⚠️ network round-trip unverified | See "x402" below |
 | 5. Agents + demo | ✅ Done | `scripts/demo.sh` ran end-to-end on real testnet: create → trade → resolve → record trace → verify hash. `agents/` CLIs ran in dry-run mode successfully; live mode is implemented but not exercised (see below) |
 | 6. Bindings | ✅ Mostly verified | See "Bindings" below |
-| 7. Contributor readiness | ✅ Done | This file plus READMF/CONTRIBUTING/CODE_OF_CONDUCT/SECURITY/LICENSE/CI/issue templates/15 wave-issues |
+| 7. Contributor readiness | ✅ Done | This file plus README/CONTRIBUTING/CODE_OF_CONDUCT/SECURITY/LICENSE/CI/issue templates/15 wave-issues |
 | 8. Final report | ✅ This file | |
 
 ## What's fully verified (command output exists for all of these)
 
-- `cargo fmt --check`, `cargo clippy --workspace --all-targets - -D
+- `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D
   warnings`, `cargo test --workspace` (40 tests across `market-core`,
   `resolver`, `reasoning-registry`, `treasury`) — all exit 0.
 - `stellar contract build` produces all four `.wasm` files cleanly, with no
-  spec warnings (the `experimental_spec_shaking_v2` soroban-sdl feature was
+  spec warnings (the `experimental_spec_shaking_v2` soroban-sdk feature was
   needed to get `Outcome`/`Category` properly represented in
-  `resolver`'s/`treasury`'s own contract spec — see AD 0002).
+  `resolver`'s/`treasury`'s own contract spec — see ADR 0002).
 - `python3 model/fpmm_model.py` passes (known-value checks against the same
   worked examples as the Rust tests, a property test, and a
   `gross_for_shares`/`calc_sell` round-trip check).
@@ -134,9 +149,9 @@ anywhere under `oracledesk-stellar/`.
   publication, and hash verification. Ran twice (once building the scripts
   interactively, once via the finished `scripts/demo.sh`) with consistent
   results.
-- **The resolution-commitment design (ADR
-0001)** was validated on live testnet, not just in unit tests: `treasury.agent_create_market` was
-  called with a `resolution_hash` computed off-chain bv
+- **The resolution-commitment design (ADR 0001)** was validated on live
+  testnet, not just in unit tests: `treasury.agent_create_market` was
+  called with a `resolution_hash` computed off-chain by
   `scripts/spec-hash/`, and `resolver.register_signer_spec` accepted the
   matching revealed spec — the hash genuinely round-tripped through real
   XDR encoding on a real ledger.
@@ -158,10 +173,6 @@ anywhere under `oracledesk-stellar/`.
 
 ## What's implemented but not fully round-trip verified
 
-- `decimals()` is read once at construction and the derived bounds are
-  exercised in unit tests at 0, 7 and 18 decimals, but no real-testnet
-  deployment of a market with an 18-decimal collateral has been made. The
-  deployed contracts and `deployments/testnet.json` predate this change.
 - **x402's registry-backed `TraceRepository`**
   (`x402/registry-trace-repository.ts`): unit-tested with a
   dependency-injected fake reader (its real interface, verified against the
@@ -169,7 +180,7 @@ anywhere under `oracledesk-stellar/`.
   server against the live deployed `reasoning-registry` failed — but the
   failure is an environment issue, not a code issue: **Node's own outbound
   `fetch` to `soroban-testnet.stellar.org` times out at the TCP level in
-  this sandbox** (`ETIMEDOUT` / `ENETREACH`, reproduced with a bare
+  this sandbox** (`ETIMEDOUT` / `ENETUNREACH`, reproduced with a bare
   `node -e "fetch(...)"` with no OracleDesk code involved at all), while
   `curl` to the identical URL and the Rust `stellar` CLI itself both work
   fine throughout this same session. This looks like a sandbox network
@@ -183,9 +194,9 @@ anywhere under `oracledesk-stellar/`.
   dry-run mode end to end. Never run in live mode — that would need the
   same Node→testnet RPC path just noted as unverified, plus a funded
   agent secret key wired through `AGENT_SECRET_KEY`.
-- **`quote_sell`/`collateralOutForShares` against a live contract quote`*:
-  the property test in both `model/fpmm_model.py`` and
-  `agents/core/fpm.test.ts` verifies the off-chain math against itself
+- **`quote_sell`/`collateralOutForShares` against a live contract quote**:
+  the property test in both `model/fpmm_model.py` and
+  `agents/core/fpmm.test.ts` verifies the off-chain math against itself
   (forward `calc_sell` vs. the `collateralOutForShares` inverse), which is
   what the design brief asked for ("add a test against the contract
   quote") in spirit — but it was not additionally checked against a live
@@ -193,13 +204,120 @@ anywhere under `oracledesk-stellar/`.
 
 ## Blocked / not attempted
 
-- `decimals()` is a cross-contract call in the constructor, so the collateral
-  token must already be deployed when the market-core constructor runs.
-  `scripts/deploy-testnet.sh` already deploys the asset first, but no
-  real-testnet deployment of an 18-decimal collateral has been made.
 - **Reflector (SEP-40) price-mode resolution on live testnet**: `resolver`'s
-  `PriceThreshold` mode is implemented and unit-tested (with a mock reflector),
-  but no real testnet Reflector contract address was used
+  `PriceThreshold` mode is implemented and unit-tested (with a mock
+  reflector), but no real testnet Reflector contract address was used
   anywhere — there was no way to look one up and verify it against
   Reflector's own current docs in this session (no browsing tool was
-  used for this). The demo uses **signer mode** instead, which ne
+  used for this). The demo uses **signer mode** instead, which needs no
+  external oracle. See `docs/wave-issues/05-reflector-feed-discovery.md`.
+- **A real testnet USDC issuer** (e.g. Circle's): not used. `scripts/
+  deploy-testnet.sh` deploys a **self-issued** test "USDC" (a real SEP-41
+  Stellar Asset Contract, 7 decimals, matching the design doc) rather than
+  guessing at a real issuer's address. The contract now supports any
+  collateral in `0..=18` decimals, but no 18-decimal token has been
+  deployed to testnet; the live deployment remains 7-decimal. This is
+  called out as a
+  `TODO(maintainer)` in `scripts/deploy-testnet.sh` and `.env.example`.
+- **Actually buying a trace through x402** (payment settlement via a real
+  facilitator): not attempted. No x402-on-Stellar facilitator URL is known
+  or hardcoded anywhere in this repo; finding and verifying one needs
+  browsing x402's current docs, which this session didn't do. `x402/`'s
+  code path up to "would this trace be served" (hash verification) is
+  tested; the payment middleware itself is `@x402/*`'s own code, unmodified
+  here.
+- **CI has never actually run** (no GitHub Actions run occurred — this repo
+  was never pushed). `.github/workflows/ci.yml` mirrors every command this
+  file claims was run locally, but "the workflow file is correct" is a
+  weaker claim than "the workflow ran green," and it's flagged as such.
+
+## Changed from the original design, and why
+
+- **Treasury's public API**: the design doc describes
+  `agent_create_market`/`agent_buy`/`agent_sell` calling market-core "as
+  the trader/creator itself." The *inherited* code had a completely
+  different, advisory-only `authorize_trade`/`close_trade` pair that never
+  called market-core at all. This was a real gap (the on-chain caps didn't
+  cap anything), not a style choice, so it was replaced rather than kept
+  alongside the new functions — see the commit that did this and ADR
+  references in `contracts/treasury/src/lib.rs`.
+- **Cross-contract calls**: the design doc suggested either
+  `contractimport!` or a Cargo dependency, "pick the simplest that builds."
+  A Cargo dependency does not build to wasm (duplicate `__constructor`
+  export — see ADR 0002), which the design doc didn't anticipate. Switched
+  to `contractimport!` for both `resolver` and `treasury`.
+- **Resolution spec registration is not admin-gated.** The original
+  resolver had `configure_price`/`configure_signers` as admin-only setters.
+  Per the resolution-commitment design (ADR 0001), the correct gate is the
+  cryptographic commitment, not caller identity — anyone can reveal a spec
+  that hashes correctly, since only whoever picked it in the first place
+  could have produced a match.
+- **Guardian functions added** (`resolver.cancel_proposal`,
+  `resolver.guardian_void_market`): the design doc's Attested mode
+  description mentions "a guardian can cancel a proposal or void the market
+  during the window," but no such functions existed in the inherited code.
+  Added as thin, admin-gated wrappers.
+- **`agents/core` is not a port** of `oracledesk-contracts/agents/*.ts`.
+  Those files turned out to contain only EVM/Circle/Polymarket *execution*
+  plumbing (ABI encoding, Circle Developer-Controlled Wallets, EIP-712
+  order signing) — exactly what the design brief says to remove, and
+  nothing chain-agnostic to actually carry over. `agents/core/strategy.ts`
+  is a fresh, minimal implementation of the two described roles.
+
+## TODO(maintainer)
+
+Decisions only a human maintainer should make, left as `TODO(maintainer)`
+markers in the files themselves:
+
+- `SECURITY.md` — an expected triage/response timeline for reports.
+- `CODE_OF_CONDUCT.md` — a direct contact channel alongside GitHub's
+  security-advisory reporting path, if wanted.
+- `CONTRIBUTING.md` — an expected PR review turnaround.
+- `scripts/deploy-testnet.sh` / `.env.example` — whether to switch the
+  testnet collateral token from the self-issued test USDC to Circle's real
+  testnet USDC issuer (needs verifying their current testnet address).
+- `.env.example` — the x402-on-Stellar facilitator URL to use for real
+  payment settlement (none is hardcoded or guessed anywhere in this repo).
+
+## Known limitations
+
+- **Testnet only, unaudited.** Nothing here has been professionally
+  reviewed; do not deploy to mainnet.
+- **No indexer.** Soroban RPC's event retention window is short; anything
+  needing history beyond it has no data source yet (see
+  `docs/wave-issues/06-event-indexer.md`).
+- **Agent-vs-agent liquidity** is unbounded: nothing stops multiple
+  independent agent deployments from trading against the same
+  `market-core` markets. The treasury's caps bound one deployment's own
+  risk, not systemic market behavior.
+- **Expiry cannot help an oracle the creator controls.** `expire_market`
+  voids unresolvable markets 30 days after close, but a creator who commits
+  to a feed they control can still decide the outcome of a *resolvable*
+  price market; the commitment does not bind oracle identity (ADR 0001,
+  "Liveness fallback").
+- **Single admin key per contract**, no multisig/timelock. A compromised
+  admin key has a large blast radius per contract (see
+  `docs/wave-issues/12-architecture-deep-dive-and-threat-model.md`, which
+  proposes writing this up formally — not yet done).
+- **`treasury`'s per-market cap is cumulative and never decreases** (even
+  after `close_trade`) — this is the existing, intentional design (a
+  lifetime cap on capital ever committed to one market), documented in
+  `contracts/treasury/src/lib.rs`'s comments, but worth stating here since
+  it's easy to misread as a bug.
+- **Collateral decimals are fixed at deploy time** and must be in `0..=18`.
+  `__constructor` calls `decimals()` on the collateral token, so the token
+  must already be deployed; a token reporting more than 18 decimals is
+  rejected with `Error::UnsupportedDecimals`. Rebasing and
+  fee-on-transfer tokens are out of scope (see the solvency-accounting
+  issue). Market size bounds scale with decimals: `min_seed = 100 * 10^d`
+  and `max_sets = 1e8 * 10^d`.
+
+## Reproducing this
+
+```bash
+make setup && make build && make lint && make test
+make deploy-testnet   # idempotent — safe to re-run
+make demo             # full create -> trade -> resolve -> trace -> verify loop
+```
+
+See `README.md` for prerequisites.
