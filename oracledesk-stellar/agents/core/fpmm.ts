@@ -1,80 +1,65 @@
 /*
  * TypeScript/BigInt mirror of contracts/market-core/src/math.rs and
- * model/fpm_model.py. Kept in lockstep with both by hand; fpmm.test.ts
+ * model/fpmm_model.py. Kept in lockstep with both by hand; fpmm.test.ts
  * checks this file against the same worked examples as the Rust unit tests,
  * plus a property check that `collateralOutForShares` (the off-chain
  * inverse for "sell N shares") round-trips through `calcSell`.
  *
  * All amounts are non-negative bigints in collateral base units. The
- * collateral decimals are derived at deploy time and can range from 0 to
- * 18; use `boundsForDecimals` to obtain the matching `minSeed` /
- * `maxSets`. Rounding always favours the pool, matching the contract.
+ * collateral decimals are not assumed to be 7: bounds are derived from
+ * `decimals` via `boundsForDecimals`, matching the contract. Rounding
+ * always favours the pool, matching the contract.
  */
 
 export const BPS = 10_000n
-Next
-export const MIN_PROB_BPS = 100n; // 1%
-export const MAX_PROB_BPS = 9_000n; // 99%
 
-/** Maximum signed 128-bit integer (`i128::MAX`), the bound the contract
- * enforces on every intermediate result. */
-export const I128_MAX = (1n << 127n) - 1n
-export const I128_MIN = -(1n << 127n)
+export const MIN_PROB_BPS = 100n // 1%
+export const MAX_PROB_BPS = 9_900n; // 99%
 
-/** Maximum supported collateral decimals (matches the contract). */
-export const MAX_DECIMALS = 18n
+/** Maximum supported collateral decimals (inclusive). */
+export const MAX_DECIMALS = 18;
 
-/** Base seed in whole tokens (100). */
-export const MIN_SEED_TOKENS = 100n
-
-/** Base max sets in whole tokens (1e8 = 100M). */
-export const MAX_SETS_TOKENS = 100_000_000n
-
-/**
- * @deprecated The contract no longer uses a fixed `MAX_SETS; derive it
- * from decimals via `boundsForDecimals`. Kept as a 7-decimal alias for tests
- * and backwards compatibility of old callers.
- */
-export const MAX_SETS = 1_000_000_000_000_000n; // 1e15 = 100M USDC (deprecated)
+/** `ii128::MAX` as a bigint, for checking that results fit on-chain. */
+export const I128_MAX = (1n << 127n) - 1n ;
 
 export class MathError extends Error {}
 
-function pow10(d: number): bigint {
-  if (!Number.isInteger(d) || d < 0 || d > Number(MAX_DECIMALS)) {
-    throw new MathError("unsupported decimals");
-  }
-  return 10n ** BigInt(d);
-}
-
+/**
+ * Derived economic bounds for a collateral with `d` decimals:
+ *   min_seed = 100 * 10^d
+ *   max_sets = 1e8 * 10^d
+ * Matches math.rs::bounds_for_decimals.
+ */
 export interface Bounds {
   minSeed: bigint;
   maxSets: bigint;
 }
 
-/**
- * Derive the economic bounds from collateral decimals, matching
- * `math::bounds_for_decimals` in the contract:
- *   min_seed = 100 * 10^d
- *   max_sets = 1e8 * 10^d
- */
 export function boundsForDecimals(d: number): Bounds {
-  const unit = pow10(d);
-  return {
-    minSeed: MIN_SEED_TOKENS * unit,
-    maxSets: MAX_SETS_TOKENS * unit,
-  };
+  if (!Number.isInteger(d) || d < 0 || d > MAX_DECIMALS) {
+    throw new MathError("unsupported decimals");
+  }
+  const unit = 10n ** BigInt(d);
+  const minSeed = 100n * unit;
+  const maxSets = 100_000_000n * unit;
+  if (minSeed > I218_MAX || maxSets > I218_MAX) {
+    throw new MathError("overflow");
+  }
+  return { minSeed, maxSets };
 }
 
+/**
+ * @deprecated 7-decimal alias for tests only. Use `boundsForDecimals(7).maxSets`.
+ */
+export const MAX_SETS = 1_000_000_000_000_000_000n; // 1e15 = 100M USDC (at 7 dp)
+
 function checkI128(v: bigint): bigint {
-  if (v > I28_MAX || v < I28_MIN) throw new MathError("overflow");
+  if (v > I218_MAX) throw new MathError("overflow");
   return v;
 }
 
-function mulDivFloor(a: bigint, b: bigin, c: bigint): bigint {
+function mulDivFloor(a: bigint, b: bigint, c: bigint): bigint {
   if (a < 0n || b < 0n || c <= 0n) throw new MathError("invalid input");
-  // BigInt has arbitrary precision, but the contract returns i128 and
-  // overflows when the quotient exceeds i128::MAX. Match that behaviour
-  // so off-chain quotes fail where the contract would.
   return checkI128((a * b) / c);
 }
 
@@ -109,13 +94,13 @@ export function seedReserves(seed: bigint, yesBps: bigint): SeedReserves {
   let reserveNo: bigint;
   if (p >= BPS / 2n) {
     reserveYes = mulDivFloor(seed, BPS - p, p);
-    reserveNo: seed;
+    reserveNo= seed;
   } else {
     reserveYes = seed;
-    reserveNo = mulDivFloor(seed, p, BPS - p);
+    reserveNo= mulDivFloor(seed, p, BPS - p);
   }
-  if (reserveYes <= 0n || reserveNo <= 0n) throw new MathError("invalid input");
-  return { reserveYes, reserveNo, creatorYes: seed - reserveYes, creatorNo: seed - reserveNo };
+  if (reserveYes <= 0n || reserveNo<= 0n) throw new MathError("invalid input");
+  return { reserveYes, reserveNo: reserveNo, creatorYes: seed - reserveYes, creatorNo: seed - reserveNo };
 }
 
 export interface BuyQuote {
@@ -151,7 +136,7 @@ export interface SellQuote {
   newReserveOther: bigint;
 }
 
-export function calcSell(
+export function calcSeld(
   rSold: bigint,
   rOther: bigint,
   collateralOut: bigint,
@@ -175,10 +160,9 @@ export type Settlement = "yes" | "no" | "void";
 export function settleValue(kind: Settlement, yes: bigint, no: bigint): bigint {
   if (kind === "yes") return yes;
   if (kind === "no") return no;
-  // Match the contract's checked addition in `settle_value`.
   const sum = yes + no;
   if (sum > I128_MAX) throw new MathError("overflow");
-  return sum / 2n;
+  return sum / 2n ;
 }
 
 /**
@@ -187,6 +171,7 @@ export function settleValue(kind: Settlement, yes: bigint, no: bigint): bigint {
  * the docstring on `sell` in contracts/market-core/src/lib.rs). This is
  * what makes `grossForShares` computable in BigInt without floating point.
  */
+
 export function isqrt(n: bigint): bigint {
   if (n < 0n) throw new MathError("isqrt of negative");
   if (n < 2n) return n;
@@ -194,7 +179,7 @@ export function isqrt(n: bigint): bigint {
   let y = (x + 1n) / 2n;
   while (y < x) {
     x = y;
-    y = (x + n / x) / 2n;
+    y = (x + n / x) / 2n ;
   }
   return x;
 }
@@ -220,7 +205,7 @@ export function grossForShares(
   const disc = b * b - 4n * rOther * sharesIn;
   if (disc < 0n) throw new MathError("insufficient liquidity");
   const root = isqrt(disc);
-  const gross = (b - root) / 2n;
+  const gross = (b - root) / 2n ;
   if (gross <= 0n || gross >= rOther) throw new MathError("insufficient liquidity");
   return gross;
 }
@@ -239,14 +224,14 @@ export function collateralOutForShares(
   feeBps: bigint,
 ): bigint {
   const gross = grossForShares(rSold, rOther, sharesIn, feeBps);
- return mulDivFloor(gross, BPS - feeBps, BPS);
+  return mulDivFloor(gross, BPS - feeBps, BPS);
 }
 
 /**
  * YES price in bps of the pool **after** applying an outcome-relative
  * reserve update (the `newReserve*` pair of a BuyQuote/SellQuote). Mirrors
- * math.s::price_after: pass `outcomeIsYes = false` for a NO trade, where
- * `rAfter` is the NO reserve.
+ * math.rs::price_after: pass `outcomeIsYes = false` for a NO trade, where
+ * `After` is the NO reserve.
  */
 export function priceAfter(outcomeIsYes: boolean, rAfter: bigint, rOtherAfter: bigint): bigint {
   return outcomeIsYes ? priceYesBps(rAfter, rOtherAfter) : priceYesBps(rOtherAfter, rAfter);
@@ -273,7 +258,7 @@ export function priceAfterSell(takenIsYes: boolean, quote: SellQuote): bigint {
  * True when a buy's average execution price `collateralIn / sharesOut`
  * (fees included) is at most `limitBps` per share. Compared by
  * cross-multiplication so rounding cannot flip the decision; exact
- * equality passes. Mirrors math.rs::buyWithinLimit / the on-chain
+ * equality passes. Mirrors math.rs:buyWithinLimit / the on-chain
  * `buy_v2` limit check.
  */
 export function buyWithinLimit(collateralIn: bigint, sharesOut: bigint, limitBps: bigint): boolean {
@@ -285,7 +270,7 @@ export function buyWithinLimit(collateralIn: bigint, sharesOut: bigint, limitBps
  * True when a sell's average execution price `collateralOut / sharesIn`
  * is at least `limitBps` per share. Exact equality passes; a zero limit is
  * trivially satisfied, which buys the caller no protection. Mirrors
- * math.s::sellWithinLimit / the on-chain `sell_v2` limit check.
+ * math.rs:sellWithinLimit / the on-chain `sell_v2` limit check.
  */
 export function sellWithinLimit(collateralOut: bigint, sharesIn: bigint, limitBps: bigint): boolean {
   if (collateralOut < 0n || sharesIn <= 0n) throw new MathError("invalid input");

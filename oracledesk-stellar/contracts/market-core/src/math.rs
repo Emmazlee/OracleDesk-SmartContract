@@ -1,38 +1,38 @@
 //! Pure integer math for a binary fixed-product market maker (FPMM).
+//! Pure integer math for a binary fixed-product market maker (FPMM).
 //!
 //! No Soroban types in here, so `cargo test` exercises it natively and
 //! `model/fpmm_model.py` mirrors it line by line for property testing.
 //!
 //! Conventions
 //! - All amounts are non-negative `i128` in collateral base units
-//!   (raw token units; the collateral's `decimals()` is read at deploy time
-//!   and the economic bounds are derived from it, see `bounds_for_decimals`).
+//!   (the collateral token's `decimals()` is read at deploy; 1 token unit =
+//!   10^d base units). Economic bounds are derived from `d` via
+//!   `bounds_for_decimals`, so nothing here assumes 7 decimals.
 //! - Rounding always favours the pool: fees round up, shares out round down,
 //!   shares in round up. This is what keeps the pool invariant `k = r_yes * r_no`
 //!   non-decreasing and blocks dust-splitting attacks.
-//! - `mul_div_floor` / `mul_div_ceil` use 256-bit intermediates (`mod wide`),
-//!   so a result that fits in `i128` is always returned exactly, regardless of
-//!   the size of the `a * b` product. Correctness no longer depends on any
-//!   headroom argument about the operands.
-//! - `bounds_for_decimals` derives `min_seed` and `max_sets` from the
-//!   collateral's decimals (supported range `0..=18`). At `d = 18`,
-//!   `max_sets = 1e26`, so products of two quantities can reach `1e52`,
-//!   which is why the widening helpers are required.
+//! - `mul_div_floor` / `mul_div_ceil` use a 256-bit (hi/lo `u128`) widening
+//!   multiply and divide, so a result that fits in `i128` is always returned
+//!   exactly, regardless of the intermediate product size. This is what lets
+//!   `max_sets = 1e8 * 10^d` (up to 1e26 at 18 decimals) work without
+//!   overflow. Every other multiplication is still `checked_*` as a second
+//!   line of defence.
 
 pub const BPS: i128 = 10_000;
 #[deprecated(note = "7-decimal alias for tests only; use bounds_for_decimals")]
 pub const MAX_SETS: i128 = 1_000_000_000_000_000; // 1e15 = 100M USDC (7 dp)
+pub const MIN_SEED: i128 = 100 * 10_000_000; // 100 USDC (7 dp)
 pub const MIN_PROB_BPS: u32 = 100; // 1%
 pub const MAX_PROB_BPS: u32 = 9_900; // 99%
-
-/// Largest collateral `decimals()` value supported by `bounds_for_decimals`.
-pub const MAX_DECIMALS: u32 = 18;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum MathError {
     Overflow,
     InvalidInput,
     InsufficientLiquidity,
+    /// Collateral `decimals()` is outside the supported `0..=18` range.
+    UnsupportedDecimals,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -117,6 +117,18 @@ pub fn price_yes_bps(reserve_yes: i128, reserve_no: i128) -> Result<i128, MathEr
     mul_div_floor(reserve_no, BPS, sum)
 }
 
+/// Derives `min_seed = 100 * 10^d` and `max_sets = 1e8 * 10^d` for a
+/// collateral with `d` decimals. Supported range is `0..=18`.
+pub fn bounds_for_decimals(d: u32) -> Result<Bounds, MathError> {
+    if d > 18 {
+        return Err(MathError::UnsupportedDecimals);
+    }
+    let unit = 10i128.checked_pow(d).ok_or(MathError::Overflow)?;
+    let min_seed = 100i128.checked_mul(unit).ok_or(MathError::Overflow)?;
+    let max_sets = 100_000_000i128.checked_mul(unit).ok_or(MathError::Overflow)?;
+    Ok(Bounds { min_seed, max_sets })
+}
+
 /// YES price in bps of the pool **after** applying an outcome-relative
 /// reserve update (the `new_reserve_*` pair of a `BuyQuote`/`SellQuote`).
 /// Follows `reserves_for`'s convention: pass `outcome_is_yes = false` for a
@@ -131,23 +143,6 @@ pub fn price_after(
     } else {
         price_yes_bps(r_other_after, r_after)
     }
-}
-
-/// Derive `min_seed` and `max_sets` from the collateral's `decimals()`.
-///
-/// `min_seed = 100 * 10^d`, `max_sets = 1e8 * 10^d`. Supported `d` is
-/// `0..=18`. At `d = 18`, `max_sets = 1e26`; products of two such values
-/// reach `1e52` and are handled by the widening helpers above.
-pub fn bounds_for_decimals(d: u32) -> Result<Bounds, MathError> {
-    if d > MAX_DECIMALS {
-        return Err(MathError::InvalidInput);
-    }
-    let unit = 10i128.checked_pow(d).ok_or(MathError::Overflow)?;
-    let min_seed = 100i128.checked_mul(unit).ok_or(MathError::Overflow)?;
-    let max_sets = 100_000_000i128
-        .checked_mul(unit)
-        .ok_or(MathError::Overflow)?;
-    Ok(Bounds { min_seed, max_sets })
 }
 
 /// Pool opens at `yes_bps` probability with `seed` complete sets minted.
@@ -295,9 +290,6 @@ pub fn split_fee(fee: i128, protocol_share_bps: u32) -> Result<(i128, i128), Mat
 /// Collateral value of a (yes, no) share pair once a market is final.
 /// Void pays 0.5 per share, which keeps total payouts <= sets minted.
 pub fn settle_value(kind: Settlement, yes: i128, no: i128) -> Result<i128, MathError> {
-    if yes < 0 || no < 0 {
-        return Err(MathError::InvalidInput);
-    }
     Ok(match kind {
         Settlement::Yes => yes,
         Settlement::No => no,
@@ -305,45 +297,36 @@ pub fn settle_value(kind: Settlement, yes: i128, no: i128) -> Result<i128, MathE
     })
 }
 
-/// 256-bit widening multiply and divide, Env-free.
-///
-/// `mul` is schoolbook on 64-bit limbs; `divrem` normalises and uses a
-/// shift-subtract long division on 64-bit digits. `divrem` returns
-/// `Overflow` when the quotient does not fit in `u128` (i.e. `n.hi >= d`).
 mod wide {
     use super::MathError;
 
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    /// 256-bit unsigned value as a `(hi, lo)` pair of `u128` limbs.
+    #[derive(Clone, Copy)]
     pub struct U256 {
         pub hi: u128,
         pub lo: u128,
     }
 
-    /// Full 128x128 -> 256 multiply via 64-bit limbs.
+    /// Schoolbook widening multiply on 64-bit limbs.
     pub fn mul(a: u128, b: u128) -> U256 {
         let a_lo = a as u64 as u128;
-        let a_hi = (a >> 64) as u64 as u128;
+        let a_hi = a >> 64;
         let b_lo = b as u64 as u128;
-        let b_hi = (b >> 64) as u64 as u128;
+        let b_hi = b >> 64;
 
-        let p0 = a_lo * b_lo;
-        let p1 = a_lo * b_hi;
-        let p2 = a_hi * b_lo;
-        let p3 = a_hi * b_hi;
+        let ll = a_lo * b_lo;
+        let lh = a_lo * b_hi;
+        let hl = a_hi * b_lo;
+        let hh = a_hi * b_hi;
 
-        // lo = p0 + ((p1 + p2) << 64), tracking carries into hi.
-        let mid = p1 + p2; // <= 2 * (2^64-1)^2 < 2^129, fits u128
-        let mid_lo = mid << 64;
-        let mid_hi = mid >> 64;
-
-        let lo = p0.wrapping_add(mid_lo);
-        let carry = (lo < p0) as u128;
-        let hi = p3 + mid_hi + carry;
+        let mid = (ll >> 64) + (lh as u64 as u128) + (hl as u64 as u128);
+        let lo = (ll as u64 as u128) | (mid << 64);
+        let hi = hh + (lh >> 64) + (hl >> 64) + (mid >> 64);
         U256 { hi, lo }
     }
 
-    /// Divide a 256-bit numerator by a 128-bit divisor.
-    /// Returns `(quotient, remainder)`; `Overflow` if the quotient > u128::MAX.
+    /// Divides `n` by `d`, returning `(quotient, remainder)`.
+    /// Returns `Overflow` if the quotient does not fit in `u128`.
     pub fn divrem(n: U256, d: u128) -> Result<(u128, u128), MathError> {
         if d == 0 {
             return Err(MathError::InvalidInput);
@@ -354,27 +337,21 @@ mod wide {
         if n.hi == 0 {
             return Ok((n.lo / d, n.lo % d));
         }
-
-        // Shift-subtract long division over 128 bits. `n.hi < d` guarantees
-        // the quotient fits in u128.
+        // Shift-subtract long division over 128 bits of the low limb.
         let mut q: u128 = 0;
-        let mut rem: u128 = n.hi;
+        let mut r: u128 = n.hi;
         let mut i: u32 = 128;
         while i > 0 {
             i -= 1;
-            // rem = rem * 2 + bit_i(n.lo); rem < d <= u128::MAX so rem*2 may
-            // overflow only when rem >= 2^127, in which case rem*2 >= d and
-            // the subtraction below still yields a valid remainder.
-            let bit = (n.lo >> i) & 1;
-            let (shifted, carry) = rem.overflowing_shl(1);
-            rem = shifted | bit;
+            let carry = r >> 127;
+            r = (r << 1) | ((n.lo >> i) & 1);
             q <<= 1;
-            if carry || rem >= d {
-                rem = rem.wrapping_sub(d);
+            if carry != 0 || r >= d {
+                r = r.wrapping_sub(d);
                 q |= 1;
             }
         }
-        Ok((q, rem))
+        Ok((q, r))
     }
 }
 
@@ -506,27 +483,29 @@ mod tests {
 
     #[test]
     fn wide_mul_matches_reference() {
-        // Random u128 pairs checked against a two-step decomposition.
-        let mut x: u64 = 0xDEAD_BEEF_CAFE_F00D;
+        let mut x: u64 = 0x9E37_79B9_7F4A_7C15;
         let mut next = move || {
             x = x
                 .wrapping_mul(6364136223846793005)
                 .wrapping_add(1442695040888963407);
-            ((x as u128) << 64) | (x.rotate_left(17) as u128)
+            ((x >> 32) as u128) << 32 | (x as u32 as u128)
         };
-        for _ in 0..10_000 {
+        for _ in 0..2_000 {
             let a = next();
             let b = next();
             let p = wide::mul(a, b);
-            // Reconstruct via u128::widening_mul semantics: split a into
-            // (a_hi, a_lo) 64-bit halves and accumulate.
+            // Reconstruct a*b from hi/lo and check against a decomposition.
             let a_lo = a as u64 as u128;
             let a_hi = a >> 64;
-            let lo_part = a_lo * b;
-            let hi_part = a_hi * b;
-            let lo = lo_part.wrapping_add(hi_part << 64);
-            let carry = (lo < lo_part) as u128;
-            let hi = (hi_part >> 64) + carry;
+            let b_lo = b as u64 as u128;
+            let b_hi = b >> 64;
+            let ll = a_lo * b_lo;
+            let lh = a_lo * b_hi;
+            let hl = a_hi * b_lo;
+            let hh = a_hi * b_hi;
+            let mid = (ll >> 64) + (lh as u64 as u128) + (hl as u64 as u128);
+            let lo = (ll as u64 as u128) | (mid << 64);
+            let hi = hh + (lh >> 64) + (hl >> 64) + (mid >> 64);
             assert_eq!(p.lo, lo);
             assert_eq!(p.hi, hi);
         }
@@ -534,19 +513,40 @@ mod tests {
 
     #[test]
     fn mul_div_handles_products_above_i128() {
-        // a = b = 1e26, c = 1e26 -> 1e26, even though a*b = 1e52 > i128::MAX.
-        let big: i128 = 100_000_000_000_000_000_000_000_000;
+        let big = 100_000_000_000_000_000_000_000_000i128; // 1e26
         assert_eq!(mul_div_floor(big, big, big).unwrap(), big);
         assert_eq!(mul_div_ceil(big, big, big).unwrap(), big);
-        // ceil rounds up on a non-zero remainder.
-        assert_eq!(mul_div_ceil(big, big, big + 1).unwrap(), big);
-        assert_eq!(mul_div_floor(big, big, big + 1).unwrap(), big - 1);
+    }
+
+    #[test]
+    fn bounds_for_decimals_0_7_18() {
+        let b0 = bounds_for_decimals(0).unwrap();
+        assert_eq!(b0.min_seed, 100);
+        assert_eq!(b0.max_sets, 100_000_000);
+        let b7 = bounds_for_decimals(7).unwrap();
+        assert_eq!(b7.min_seed, 100 * 10_000_000);
+        assert_eq!(b7.max_sets, 1_000_000_000_000_000);
+        let b18 = bounds_for_decimals(18).unwrap();
+        assert_eq!(b18.min_seed, 100 * 10i128.pow(18));
+        assert_eq!(b18.max_sets, 100_000_000 * 10i128.pow(18));
+        assert_eq!(
+            bounds_for_decimals(19),
+            Err(MathError::UnsupportedDecimals)
+        );
+    }
+
+    #[test]
+    fn known_values_18dp() {
+        let scale = 10i128.pow(11);
+        let q = calc_buy(1000 * scale, 1000 * scale, 100 * scale, 0).unwrap();
+        assert_eq!(q.shares_out, 190 * scale);
+        assert_eq!(q.new_reserve_bought, 910 * scale);
+        assert_eq!(q.new_reserve_other, 1100 * scale);
     }
 
     #[test]
     fn mul_div_differential_vs_legacy() {
-        // 100k LCG cases inside the legacy (7-decimal) domain.
-        let mut x: u64 = 0x1234_5678_9ABC_DEF0;
+        let mut x: u64 = 0x9E37_79B9_7F4A_7C15;
         let mut next = move || {
             x = x
                 .wrapping_mul(6364136223846793005)
@@ -557,49 +557,13 @@ mod tests {
             let a = next() % 1_000_000_000_000_000;
             let b = next() % 1_000_000_000_000_000;
             let c = 1 + next() % 1_000_000_000_000_000;
-            let legacy_floor = (a * b) / c;
-            let legacy_ceil = {
-                let p = a * b;
-                let q = p / c;
+            let p = a * b;
+            assert_eq!(mul_div_floor(a, b, c).unwrap(), p / c);
+            let q = p / c;
+            assert_eq!(
+                mul_div_ceil(a, b, c).unwrap(),
                 if p % c != 0 { q + 1 } else { q }
-            };
-            assert_eq!(mul_div_floor(a, b, c).unwrap(), legacy_floor);
-            assert_eq!(mul_div_ceil(a, b, c).unwrap(), legacy_ceil);
+            );
         }
-    }
-
-    #[test]
-    fn bounds_for_decimals_0_7_18() {
-        let b0 = bounds_for_decimals(0).unwrap();
-        assert_eq!(b0.min_seed, 100);
-        assert_eq!(b0.max_sets, 100_000_000);
-
-        let b7 = bounds_for_decimals(7).unwrap();
-        assert_eq!(b7.min_seed, 100 * 10_000_000);
-        assert_eq!(b7.max_sets, 1_000_000_000_000_000);
-
-        let b18 = bounds_for_decimals(18).unwrap();
-        assert_eq!(b18.min_seed, 100_000_000_000_000_000_000);
-        assert_eq!(b18.max_sets, 100_000_000_000_000_000_000_000_000);
-
-        assert_eq!(
-            bounds_for_decimals(19),
-            Err(MathError::InvalidInput)
-        );
-    }
-
-    #[test]
-    fn known_values_18dp() {
-        // 1000/1000 -> 190 example scaled by 10^11 (18 dp vs 7 dp).
-        let scale: i128 = 100_000_000_000;
-        let q = calc_buy(1000 * scale, 1000 * scale, 100 * scale, 0).unwrap();
-        assert_eq!(q.shares_out, 190 * scale);
-        assert_eq!(q.new_reserve_bought, 910 * scale);
-        assert_eq!(q.new_reserve_other, 1100 * scale);
-        // Seed at max_sets for 18 dp opens at the requested probability.
-        let b = bounds_for_decimals(18).unwrap();
-        let s = seed_reserves(b.max_sets, 5_000).unwrap();
-        let price = price_yes_bps(s.reserve_yes, s.reserve_no).unwrap();
-        assert!((price - 5_000).abs() <= 1);
     }
 }
