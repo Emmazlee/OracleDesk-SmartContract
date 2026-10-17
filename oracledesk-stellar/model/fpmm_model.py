@@ -14,9 +14,8 @@ computes the matching collateral_out here, then calls `sell` with a
 TypeScript (BigInt) for the trading agent; both must agree with this model.
 
 Conventions match math.rs: all amounts are non-negative ints in collateral
-base units (decimals are read from the collateral token at deploy; the model
-is decimals-agnostic and works for any supported `d` in `0..=18`). Rounding
-always favours the pool.
+base units (whatever the collateral token's `decimals()` reports; the
+deployer picks it, supported range 0..=18). Rounding always favours the pool.
 """
 
 from dataclasses import dataclass
@@ -24,14 +23,16 @@ from math import isqrt
 import random
 
 BPS = 10_000
-# Deprecated 7-decimal alias, kept only so existing fixtures keep working.
-# Contract logic derives its bounds from `bounds_for_decimals` instead.
+# Deprecated 7-decimal alias, kept only so existing fixtures/tests keep
+# compiling. Contract logic derives its bounds from `bounds_for_decimals`.
 MAX_SETS = 1_000_000_000_000_000  # 1e15 = 100M USDC (7 dp)
+I128_MAX = (1 << 127) - 1
 MIN_PROB_BPS = 100
 MAX_PROB_BPS = 9_900
 
-# i128::MAX, the widest value the contract can represent.
-I128_MAX = (1 << 127) - 1
+
+class MathError(Exception):
+    pass
 
 
 @dataclass(frozen=True)
@@ -41,23 +42,27 @@ class Bounds:
 
 
 def bounds_for_decimals(d: int) -> Bounds:
-    """Mirror of math.rs::bounds_for_decimals: min_seed = 100 * 10^d,
-    max_sets = 1e8 * 10^d, for d in 0..=18."""
+    """Mirror of math.rs::bounds_for_decimals.
+
+    `min_seed = 100 * 10^d`, `max_sets = 1e8 * 10^d`. Raises MathError for
+    `d > 18` (the contract rejects those at construction with
+    `Error::UnsupportedDecimals`).
+    """
     if d < 0 or d > 18:
         raise MathError("unsupported decimals")
     scale = 10**d
     return Bounds(min_seed=100 * scale, max_sets=100_000_000 * scale)
 
 
-class MathError(Exception):
-    pass
+def _fits_i128(x: int) -> bool:
+    return 0 <= x <= I128_MAX
 
 
 def mul_div_floor(a: int, b: int, c: int) -> int:
     if a < 0 or b < 0 or c <= 0:
         raise MathError("invalid input")
     q = (a * b) // c
-    if q > I128_MAX:
+    if not _fits_i128(q):
         raise MathError("overflow")
     return q
 
@@ -68,7 +73,7 @@ def mul_div_ceil(a: int, b: int, c: int) -> int:
     p = a * b
     q = p // c
     q = q + 1 if p % c != 0 else q
-    if q > I128_MAX:
+    if not _fits_i128(q):
         raise MathError("overflow")
     return q
 
@@ -155,7 +160,10 @@ def settle_value(kind: str, yes: int, no: int) -> int:
     if kind == "no":
         return no
     if kind == "void":
-        return (yes + no) // 2
+        total = yes + no
+        if not _fits_i128(total):
+            raise MathError("overflow")
+        return total // 2
     raise ValueError(f"unknown settlement kind {kind!r}")
 
 
@@ -251,6 +259,58 @@ def _check_known_values():
         1112,
         900,
     ), q
+
+
+def _check_known_values_18dp():
+    """18-decimal fixtures matching math.rs's `known_values_18dp` test.
+
+    The 1000/1000 -> 190 example scaled by 10**11 (7dp -> 18dp) must produce
+    the same shape of quote, and a seed at `max_sets` must not overflow.
+    """
+    scale = 10**11
+    q = calc_buy(1000 * scale, 1000 * scale, 100 * scale, 0)
+    assert (q.shares_out, q.new_reserve_bought, q.new_reserve_other) == (
+        190 * scale,
+        910 * scale,
+        1100 * scale,
+    ), q
+
+    b = bounds_for_decimals(18)
+    assert b.min_seed == 100 * 10**18
+    assert b.max_sets == 10**26
+    # A seed at max_sets must still quote without tripping the i128 guard.
+    s = seed_reserves(b.max_sets, 5000)
+    assert s.reserve_yes > 0 and s.reserve_no > 0
+    q = calc_buy(s.reserve_yes, s.reserve_no, b.min_seed, 100)
+    assert q.shares_out > 0
+
+
+def _check_bounds_for_decimals():
+    assert bounds_for_decimals(0) == Bounds(min_seed=100, max_sets=100_000_000)
+    assert bounds_for_decimals(7) == Bounds(min_seed=100 * 10**7, max_sets=10**15)
+    assert bounds_for_decimals(18) == Bounds(min_seed=100 * 10**18, max_sets=10**26)
+    for bad in (-1, 19, 20):
+        try:
+            bounds_for_decimals(bad)
+        except MathError:
+            continue
+        raise AssertionError(f"bounds_for_decimals({bad}) should raise")
+
+
+def _check_mul_div_rejects_beyond_i128():
+    # A product above i128::MAX whose quotient also exceeds i128::MAX must
+    # raise, matching the contract's MathError::Overflow.
+    big = I128_MAX
+    try:
+        mul_div_floor(big, 2, 1)
+    except MathError:
+        pass
+    else:
+        raise AssertionError("mul_div_floor should reject overflow")
+    # A product above i128::MAX whose quotient fits must still succeed
+    # exactly (the whole point of the 256-bit intermediates in Rust).
+    assert mul_div_floor(10**26, 10**26, 10**26) == 10**26
+    assert mul_div_ceil(10**26, 10**26, 10**26) == 10**26
 
 
 def _check_seed_opens_at_requested_probability():
@@ -355,6 +415,9 @@ def _check_limits_boundary_and_symmetry():
 
 def run_all():
     _check_known_values()
+    _check_known_values_18dp()
+    _check_bounds_for_decimals()
+    _check_mul_div_rejects_beyond_i128()
     _check_seed_opens_at_requested_probability()
     _check_k_never_decreases_and_round_trip_never_profits()
     _check_gross_for_shares_inverts_calc_sell()
