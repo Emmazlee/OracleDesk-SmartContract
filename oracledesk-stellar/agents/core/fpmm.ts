@@ -5,28 +5,63 @@
  * plus a property check that `collateralOutForShares` (the off-chain
  * inverse for "sell N shares") round-trips through `calcSell`.
  *
- * All amounts are non-negative bigints in collateral base units (USDC on
- * Stellar = 7 decimals). Rounding always favours the pool, matching the
- * contract.
+ * All amounts are non-negative bigints in collateral base units. The
+ * collateral token's decimals are deployment-dependent (0..=18); economic
+ * bounds are derived from them via `boundsForDecimals`, matching the
+ * contract's `math::bounds_for_decimals`. Rounding always favours the pool,
+ * matching the contract.
  */
 
 export const BPS = 10_000n;
+/**
+ * @deprecated 7-decimal alias for tests only. Contract logic derives bounds
+ * from the collateral's decimals via `boundsForDecimals`.
+ */
 export const MAX_SETS = 1_000_000_000_000_000n; // 1e15 = 100M USDC (7 dp)
 export const MIN_PROB_BPS = 100n; // 1%
 export const MAX_PROB_BPS = 9_900n; // 99%
 
+export const I128_MAX = (1n << 127n) - 1n;
+export const I128_MIN = -(1n << 127n);
+export const MAX_SUPPORTED_DECIMALS = 18;
+
 export class MathError extends Error {}
+
+export interface Bounds {
+  minSeed: bigint;
+  maxSets: bigint;
+}
+
+/**
+ * Derive the minimum seed and maximum sets from collateral decimals:
+ * `min_seed = 100 * 10^d`, `max_sets = 1e8 * 10^d`. Mirrors
+ * math.rs::bounds_for_decimals. Rejects `d > 18` (UnsupportedDecimals).
+ */
+export function boundsForDecimals(d: number): Bounds {
+  if (!Number.isInteger(d) || d < 0 || d > MAX_SUPPORTED_DECIMALS) {
+    throw new MathError("unsupported decimals");
+  }
+  const scale = 10n ** BigInt(d);
+  const minSeed = 100n * scale;
+  const maxSets = 100_000_000n * scale;
+  if (minSeed > I128_MAX || maxSets > I128_MAX) throw new MathError("overflow");
+  return { minSeed, maxSets };
+}
 
 function mulDivFloor(a: bigint, b: bigint, c: bigint): bigint {
   if (a < 0n || b < 0n || c <= 0n) throw new MathError("invalid input");
-  return (a * b) / c;
+  const q = (a * b) / c;
+  if (q > I128_MAX) throw new MathError("overflow");
+  return q;
 }
 
 function mulDivCeil(a: bigint, b: bigint, c: bigint): bigint {
   if (a < 0n || b < 0n || c <= 0n) throw new MathError("invalid input");
   const p = a * b;
   const q = p / c;
-  return p % c !== 0n ? q + 1n : q;
+  const r = p % c !== 0n ? q + 1n : q;
+  if (r > I128_MAX) throw new MathError("overflow");
+  return r;
 }
 
 export function priceYesBps(reserveYes: bigint, reserveNo: bigint): bigint {
@@ -117,7 +152,9 @@ export type Settlement = "yes" | "no" | "void";
 export function settleValue(kind: Settlement, yes: bigint, no: bigint): bigint {
   if (kind === "yes") return yes;
   if (kind === "no") return no;
-  return (yes + no) / 2n;
+  const sum = yes + no;
+  if (sum > I128_MAX) throw new MathError("overflow");
+  return sum / 2n;
 }
 
 /**
@@ -178,5 +215,63 @@ export function collateralOutForShares(
   feeBps: bigint,
 ): bigint {
   const gross = grossForShares(rSold, rOther, sharesIn, feeBps);
-  return mulDivFloor(gross, BPS - feeBps, BPS);
+  const out = mulDivFloor(gross, BPS - feeBps, BPS);
+  if (out > I128_MAX) throw new MathError("overflow");
+  return out;
+}
+
+/**
+ * YES price in bps of the pool **after** applying an outcome-relative
+ * reserve update (the `newReserve*` pair of a BuyQuote/SellQuote). Mirrors
+ * math.rs::price_after: pass `outcomeIsYes = false` for a NO trade, where
+ * `rAfter` is the NO reserve.
+ */
+export function priceAfter(outcomeIsYes: boolean, rAfter: bigint, rOtherAfter: bigint): bigint {
+  return outcomeIsYes ? priceYesBps(rAfter, rOtherAfter) : priceYesBps(rOtherAfter, rAfter);
+}
+
+/**
+ * Post-trade YES price of a `calcBuy` quote for the outcome the buyer
+ * receives (`takenIsYes = false` for a NO buy). This is what the per-market
+ * impact breaker measures against the pre-trade price.
+ */
+export function priceAfterBuy(takenIsYes: boolean, quote: BuyQuote): bigint {
+  return priceAfter(takenIsYes, quote.newReserveBought, quote.newReserveOther);
+}
+
+/**
+ * Post-trade YES price of a `calcSell` quote for the outcome the seller
+ * gave up (`takenIsYes = false` for a NO sell).
+ */
+export function priceAfterSell(takenIsYes: boolean, quote: SellQuote): bigint {
+  return priceAfter(takenIsYes, quote.newReserveSold, quote.newReserveOther);
+}
+
+/**
+ * True when a buy's average execution price `collateralIn / sharesOut`
+ * (fees included) is at most `limitBps` per share. Compared by
+ * cross-multiplication so rounding cannot flip the decision; exact
+ * equality passes. Mirrors math.rs::buyWithinLimit / the on-chain
+ * `buy_v2` limit check.
+ */
+export function buyWithinLimit(collateralIn: bigint, sharesOut: bigint, limitBps: bigint): boolean {
+  if (collateralIn < 0n || sharesOut <= 0n) throw new MathError("invalid input");
+  const lhs = collateralIn * BPS;
+  const rhs = sharesOut * limitBps;
+  if (lhs > I128_MAX || rhs > I128_MAX) throw new MathError("overflow");
+  return lhs <= rhs;
+}
+
+/**
+ * True when a sell's average execution price `collateralOut / sharesIn`
+ * is at least `limitBps` per share. Exact equality passes; a zero limit is
+ * trivially satisfied, which buys the caller no protection. Mirrors
+ * math.rs::sellWithinLimit / the on-chain `sell_v2` limit check.
+ */
+export function sellWithinLimit(collateralOut: bigint, sharesIn: bigint, limitBps: bigint): boolean {
+  if (collateralOut < 0n || sharesIn <= 0n) throw new MathError("invalid input");
+  const lhs = collateralOut * BPS;
+  const rhs = sharesIn * limitBps;
+  if (lhs > I128_MAX || rhs > I128_MAX) throw new MathError("overflow");
+  return lhs >= rhs;
 }

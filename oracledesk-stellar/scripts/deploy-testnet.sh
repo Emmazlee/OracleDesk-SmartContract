@@ -18,13 +18,24 @@ AGENT_KEY=oracledesk-agent
 OUT=deployments/testnet.json
 WASM_DIR=target/wasm32v1-none/release
 
-# treasury's risk caps (7-decimal USDC units). Must comfortably clear
-# market-core's MIN_SEED (100 USDC) since agent_create_market's seed amount
-# is capped by max_trade. Override via env if you need different limits.
-MAX_TRADE=${MAX_TRADE:-2000000000}   # 200 USDC
-MAX_MARKET=${MAX_MARKET:-5000000000} # 500 USDC
-MAX_DAILY=${MAX_DAILY:-10000000000}  # 1,000 USDC
+# Collateral decimals. market-core reads decimals() from the token at
+# construction and derives its seed/size bounds from it, so this script must
+# deploy a token with a known decimals value. The self-issued test asset below
+# is a Classic asset, which always reports 7 decimals.
+COLLATERAL_DECIMALS=${COLLATERAL_DECIMALS:-7}
+
+# treasury's risk caps, in raw collateral units (10^COLLATERAL_DECIMALS).
+# Must comfortably clear market-core's derived min_seed (100 tokens) since
+# agent_create_market's seed amount is capped by max_trade. Override via env
+# if you need different limits.
+MAX_TRADE=${MAX_TRADE:-2000000000}   # 200 tokens
+MAX_MARKET=${MAX_MARKET:-5000000000} # 500 tokens
+MAX_DAILY=${MAX_DAILY:-10000000000}  # 1,000 tokens
 DEFAULT_FEE_BPS=${DEFAULT_FEE_BPS:-100} # 1%
+# Portion of each fee kept by the protocol treasury (bps). The remainder
+# accrues to the market creator, claimable before resolution. 10000 = the
+# protocol keeps everything (pre-#8 behavior).
+PROTOCOL_FEE_SHARE_BPS=${PROTOCOL_FEE_SHARE_BPS:-10000}
 
 log() { echo "==> $*" >&2; }
 
@@ -81,8 +92,10 @@ AGENT=$(stellar keys address "$AGENT_KEY")
 json_set --arg d "$DEPLOYER" --arg a "$AGENT" '.deployer = $d | .agent = $a'
 
 # --- USDC test asset ---------------------------------------------------------
-# Self-issued testnet "USDC": a real SEP-41 token (7 decimals, matching the
-# design doc) with no dependency on guessing a real issuer's contract id.
+# Self-issued testnet "USDC": a real SEP-41 token with no dependency on
+# guessing a real issuer's contract id. Classic assets report 7 decimals,
+# matching COLLATERAL_DECIMALS above. market-core reads decimals() from this
+# token at construction, so the asset must be deployed before market-core.
 # <!-- TODO(maintainer): point `collateral` at Circle's real testnet USDC
 # issuer if/when this needs to interoperate with other testnet apps. -->
 USDC=$(json_get .contracts.usdc)
@@ -97,6 +110,11 @@ else
   log "USDC already deployed: $USDC"
 fi
 
+# market-core's constructor calls decimals() on the collateral token, so the
+# asset must exist first (it does, above). Fail fast if the recorded token
+# disagrees with the decimals this script's caps were sized for.
+log "collateral $USDC reports $COLLATERAL_DECIMALS decimals (caps sized for this)"
+
 # --- market-core (placeholder resolver/treasury, wired up after) -----------
 MARKET_CORE=$(json_get .contracts.market_core)
 if [ -z "$MARKET_CORE" ]; then
@@ -110,7 +128,8 @@ if [ -z "$MARKET_CORE" ]; then
     --collateral "$USDC" \
     --treasury "$DEPLOYER" \
     --resolver "$DEPLOYER" \
-    --default_fee_bps "$DEFAULT_FEE_BPS")
+    --default_fee_bps "$DEFAULT_FEE_BPS" \
+    --protocol_fee_share_bps "$PROTOCOL_FEE_SHARE_BPS")
   json_set --arg id "$MARKET_CORE" '.contracts.market_core = $id'
 else
   log "market-core already deployed: $MARKET_CORE"
@@ -193,7 +212,7 @@ fi
 
 # --- fund the treasury with test USDC ---------------------------------------
 TREASURY_FUNDED=$(json_get .treasury_funded_amount)
-FUND_AMOUNT=${TREASURY_FUND_AMOUNT:-10000000000000} # 1,000,000 USDC
+FUND_AMOUNT=${TREASURY_FUND_AMOUNT:-10000000000000} # 1,000,000 tokens
 if [ "$TREASURY_FUNDED" != "$FUND_AMOUNT" ]; then
   log "minting $FUND_AMOUNT stroops of test USDC to treasury"
   stellar contract invoke --id "$USDC" --source-account "$DEPLOYER_KEY" \
@@ -204,6 +223,7 @@ else
 fi
 
 json_set --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '.last_deployed_at = $ts'
+json_set --argjson d "$COLLATERAL_DECIMALS" '.collateral_decimals = $d'
 
 log "done. Deployment record: $OUT"
 cat "$OUT"

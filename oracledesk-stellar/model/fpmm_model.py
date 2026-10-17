@@ -14,7 +14,9 @@ computes the matching collateral_out here, then calls `sell` with a
 TypeScript (BigInt) for the trading agent; both must agree with this model.
 
 Conventions match math.rs: all amounts are non-negative ints in collateral
-base units (USDC on Stellar = 7 decimals). Rounding always favours the pool.
+base units (decimals are read from the collateral token at deploy; the model
+is decimals-agnostic and works for any supported `d` in `0..=18`). Rounding
+always favours the pool.
 """
 
 from dataclasses import dataclass
@@ -22,9 +24,29 @@ from math import isqrt
 import random
 
 BPS = 10_000
+# Deprecated 7-decimal alias, kept only so existing fixtures keep working.
+# Contract logic derives its bounds from `bounds_for_decimals` instead.
 MAX_SETS = 1_000_000_000_000_000  # 1e15 = 100M USDC (7 dp)
 MIN_PROB_BPS = 100
 MAX_PROB_BPS = 9_900
+
+# i128::MAX, the widest value the contract can represent.
+I128_MAX = (1 << 127) - 1
+
+
+@dataclass(frozen=True)
+class Bounds:
+    min_seed: int
+    max_sets: int
+
+
+def bounds_for_decimals(d: int) -> Bounds:
+    """Mirror of math.rs::bounds_for_decimals: min_seed = 100 * 10^d,
+    max_sets = 1e8 * 10^d, for d in 0..=18."""
+    if d < 0 or d > 18:
+        raise MathError("unsupported decimals")
+    scale = 10**d
+    return Bounds(min_seed=100 * scale, max_sets=100_000_000 * scale)
 
 
 class MathError(Exception):
@@ -34,7 +56,10 @@ class MathError(Exception):
 def mul_div_floor(a: int, b: int, c: int) -> int:
     if a < 0 or b < 0 or c <= 0:
         raise MathError("invalid input")
-    return (a * b) // c
+    q = (a * b) // c
+    if q > I128_MAX:
+        raise MathError("overflow")
+    return q
 
 
 def mul_div_ceil(a: int, b: int, c: int) -> int:
@@ -42,7 +67,10 @@ def mul_div_ceil(a: int, b: int, c: int) -> int:
         raise MathError("invalid input")
     p = a * b
     q = p // c
-    return q + 1 if p % c != 0 else q
+    q = q + 1 if p % c != 0 else q
+    if q > I128_MAX:
+        raise MathError("overflow")
+    return q
 
 
 def price_yes_bps(reserve_yes: int, reserve_no: int) -> int:
@@ -162,6 +190,49 @@ def collateral_out_for_shares(r_sold: int, r_other: int, shares_in: int, fee_bps
     return mul_div_floor(gross, BPS - fee_bps, BPS)
 
 
+def price_after(outcome_is_yes: bool, r_after: int, r_other_after: int) -> int:
+    """YES price in bps of the pool **after** applying an outcome-relative
+    reserve update (the `new_reserve_*` pair of a BuyQuote/SellQuote).
+    Mirrors math.rs::price_after: pass `outcome_is_yes=False` for a NO trade,
+    where `r_after` is the NO reserve."""
+    if outcome_is_yes:
+        return price_yes_bps(r_after, r_other_after)
+    return price_yes_bps(r_other_after, r_after)
+
+
+def price_after_buy(taken_is_yes: bool, quote: BuyQuote) -> int:
+    """Post-trade YES price of a `calc_buy` quote for the outcome the buyer
+    receives (`taken_is_yes=False` for a NO buy). This is what the
+    per-market impact breaker measures against the pre-trade price."""
+    return price_after(taken_is_yes, quote.new_reserve_bought, quote.new_reserve_other)
+
+
+def price_after_sell(taken_is_yes: bool, quote: SellQuote) -> int:
+    """Post-trade YES price of a `calc_sell` quote for the outcome the seller
+    gave up (`taken_is_yes=False` for a NO sell)."""
+    return price_after(taken_is_yes, quote.new_reserve_sold, quote.new_reserve_other)
+
+
+def buy_within_limit(collateral_in: int, shares_out: int, limit_bps: int) -> bool:
+    """True when a buy's average execution price `collateral_in / shares_out`
+    (fees included) is at most `limit_bps` per share. Compared by
+    cross-multiplication so rounding cannot flip the decision; exact
+    equality passes. Mirrors math.rs::buy_within_limit."""
+    if collateral_in < 0 or shares_out <= 0:
+        raise MathError("invalid input")
+    return collateral_in * BPS <= shares_out * limit_bps
+
+
+def sell_within_limit(collateral_out: int, shares_in: int, limit_bps: int) -> bool:
+    """True when a sell's average execution price `collateral_out / shares_in`
+    is at least `limit_bps` per share. Exact equality passes; a zero limit is
+    trivially satisfied, which buys the caller no protection. Mirrors
+    math.rs::sell_within_limit."""
+    if collateral_out < 0 or shares_in <= 0:
+        raise MathError("invalid input")
+    return collateral_out * BPS >= shares_in * limit_bps
+
+
 # ---------------------------------------------------------------------------
 # Property tests. No pytest/hypothesis dependency: run directly.
 # ---------------------------------------------------------------------------
@@ -247,12 +318,49 @@ def _check_void_never_overpays():
     assert settle_value("void", 5, 5) <= 5
 
 
+def _check_price_after_maps_both_sides():
+    """Mirrors math.rs's price_after tests: outcome_is_yes selects which of
+    the two post-trade reserves is the YES reserve."""
+    for r, other in ((1000, 1000), (910, 1100), (1, 9999), (5893, 4107)):
+        assert price_after(True, r, other) == price_yes_bps(r, other)
+        assert price_after(False, r, other) == price_yes_bps(other, r)
+
+    # Worked example shared by all three mirrors: buying 10 USDC of YES in a
+    # 100-sets pool at 50% with a 1% fee moves YES from 5000 to 5470 bps.
+    q = calc_buy(1_000_000_000, 1_000_000_000, 100_000_000, 100)
+    assert price_yes_bps(1_000_000_000, 1_000_000_000) == 5000
+    assert price_after_buy(True, q) == 5470
+    # Selling right back must not land above the pre-trade price: two fees
+    # and pool-favoring rounding always leave the seller worse off.
+    s = calc_sell(q.new_reserve_bought, q.new_reserve_other, 100_000_000, 100)
+    assert price_after_sell(True, s) < 5000
+
+
+def _check_limits_boundary_and_symmetry():
+    # Exact equality passes, one unit over fails, in both directions.
+    assert buy_within_limit(100, 100, 10_000)
+    assert buy_within_limit(100, 101, 10_000)
+    assert not buy_within_limit(101, 100, 10_000)
+    assert buy_within_limit(100, 200, 5_000)
+    assert not buy_within_limit(101, 200, 5_000)
+    assert sell_within_limit(100, 100, 10_000)
+    assert not sell_within_limit(99, 100, 10_000)
+    assert sell_within_limit(100, 200, 5_000)
+    assert not sell_within_limit(100, 201, 5_000)
+    # A zero limit is trivially satisfied for sells (documented as "no
+    # protection") and only binds a buy at a zero average price.
+    assert sell_within_limit(0, 1, 0)
+    assert not buy_within_limit(1, 1, 0)
+
+
 def run_all():
     _check_known_values()
     _check_seed_opens_at_requested_probability()
     _check_k_never_decreases_and_round_trip_never_profits()
     _check_gross_for_shares_inverts_calc_sell()
     _check_void_never_overpays()
+    _check_price_after_maps_both_sides()
+    _check_limits_boundary_and_symmetry()
     print("fpmm_model: all property checks passed")
 
 
