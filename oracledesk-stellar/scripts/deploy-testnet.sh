@@ -18,19 +18,24 @@ AGENT_KEY=oracledesk-agent
 OUT=deployments/testnet.json
 WASM_DIR=target/wasm32v1-none/release
 
-# Collateral decimals. market-core reads decimals() from the token at
-# construction and derives its seed/size bounds from it, so this script must
-# deploy a token with a known decimals value. The self-issued test asset below
-# is a Classic asset, which always reports 7 decimals.
+# Collateral decimals. market-core reads the token's decimals() at deploy and
+# derives its bounds (min_seed = 100 * 10^d, max_sets = 1e8 * 10^d), so the
+# treasury risk caps below must be scaled to match. The self-issued test USDC
+# is a Classic asset (7 decimals); set COLLATERAL_DECIMALS if you point
+# `collateral` at a token with a different precision.
 COLLATERAL_DECIMALS=${COLLATERAL_DECIMALS:-7}
+if [ "$COLLATERAL_DECIMALS" -lt 0 ] || [ "$COLLATERAL_DECIMALS" -gt 18 ]; then
+  echo "error: COLLATERAL_DECIMALS must be in 0..=18 (got $COLLATERAL_DECIMALS)" >&2
+  exit 1
+fi
+UNIT=$(printf '1%0*d' "$COLLATERAL_DECIMALS" 0) # 10^d as a decimal string
 
-# treasury's risk caps, in raw collateral units (10^COLLATERAL_DECIMALS).
-# Must comfortably clear market-core's derived min_seed (100 tokens) since
-# agent_create_market's seed amount is capped by max_trade. Override via env
-# if you need different limits.
-MAX_TRADE=${MAX_TRADE:-2000000000}   # 200 tokens
-MAX_MARKET=${MAX_MARKET:-5000000000} # 500 tokens
-MAX_DAILY=${MAX_DAILY:-10000000000}  # 1,000 tokens
+# treasury's risk caps (raw collateral units). Must comfortably clear
+# market-core's derived min_seed (100 tokens) since agent_create_market's seed
+# amount is capped by max_trade. Override via env if you need different limits.
+MAX_TRADE=${MAX_TRADE:-$((200 * UNIT))}   # 200 tokens
+MAX_MARKET=${MAX_MARKET:-$((500 * UNIT))} # 500 tokens
+MAX_DAILY=${MAX_DAILY:-$((1000 * UNIT))}  # 1,000 tokens
 DEFAULT_FEE_BPS=${DEFAULT_FEE_BPS:-100} # 1%
 # Portion of each fee kept by the protocol treasury (bps). The remainder
 # accrues to the market creator, claimable before resolution. 10000 = the
@@ -92,17 +97,16 @@ AGENT=$(stellar keys address "$AGENT_KEY")
 json_set --arg d "$DEPLOYER" --arg a "$AGENT" '.deployer = $d | .agent = $a'
 
 # --- USDC test asset ---------------------------------------------------------
-# Self-issued testnet "USDC": a real SEP-41 token with no dependency on
-# guessing a real issuer's contract id. Classic assets report 7 decimals,
-# matching COLLATERAL_DECIMALS above. market-core reads decimals() from this
-# token at construction, so the asset must be deployed before market-core.
+# Self-issued testnet "USDC": a real SEP-41 token (7 decimals by default,
+# matching COLLATERAL_DECIMALS) with no dependency on guessing a real issuer's
+# contract id. market-core reads decimals() from this token at construction.
 # <!-- TODO(maintainer): point `collateral` at Circle's real testnet USDC
 # issuer if/when this needs to interoperate with other testnet apps. -->
 USDC=$(json_get .contracts.usdc)
 if [ -z "$USDC" ]; then
   log "deploying self-issued testnet USDC (SEP-41)"
   USDC=$(stellar contract asset deploy \
-    --asset "USDC:$DEPLOYER" \
+    --asset "USDC:${DEPLOYER}" \
     --source-account "$DEPLOYER_KEY" \
     --network "$NETWORK")
   json_set --arg id "$USDC" '.contracts.usdc = $id'
@@ -110,10 +114,16 @@ else
   log "USDC already deployed: $USDC"
 fi
 
-# market-core's constructor calls decimals() on the collateral token, so the
-# asset must exist first (it does, above). Fail fast if the recorded token
-# disagrees with the decimals this script's caps were sized for.
-log "collateral $USDC reports $COLLATERAL_DECIMALS decimals (caps sized for this)"
+# Verify the collateral's decimals match what this script assumes. market-core
+# rejects decimals > 18 at construction, and the treasury caps above are sized
+# from COLLATERAL_DECIMALS, so a mismatch would silently mis-scale every limit.
+ACTUAL_DECIMALS=$(stellar contract invoke --id "$USDC" --source-account "$DEPLOYER_KEY" \
+  --network "$NETWORK" -- decimals 2>/dev/null | tr -d '"[:space:]')
+if [ -n "$ACTUAL_DECIMALS" ] && [ "$ACTUAL_DECIMALS" != "$COLLATERAL_DECIMALS" ]; then
+  echo "error: collateral $USDC reports $ACTUAL_DECIMALS decimals, expected $COLLATERAL_DECIMALS" >&2
+  echo "hint: re-run with COLLATERAL_DECIMALS=$ACTUAL_DECIMALS (and matching MAX_* caps)" >&2
+  exit 1
+fi
 
 # --- market-core (placeholder resolver/treasury, wired up after) -----------
 MARKET_CORE=$(json_get .contracts.market_core)
@@ -126,6 +136,7 @@ if [ -z "$MARKET_CORE" ]; then
     -- \
     --admin "$DEPLOYER" \
     --collateral "$USDC" \
+    --decimals "$COLLATERAL_DECIMALS" \
     --treasury "$DEPLOYER" \
     --resolver "$DEPLOYER" \
     --default_fee_bps "$DEFAULT_FEE_BPS" \
@@ -133,6 +144,7 @@ if [ -z "$MARKET_CORE" ]; then
   json_set --arg id "$MARKET_CORE" '.contracts.market_core = $id'
 else
   log "market-core already deployed: $MARKET_CORE"
+  log "note: existing market-core was constructed with its own decimals(); delete .contracts.market_core to redeploy"
 fi
 
 # --- resolver ----------------------------------------------------------------
@@ -212,7 +224,7 @@ fi
 
 # --- fund the treasury with test USDC ---------------------------------------
 TREASURY_FUNDED=$(json_get .treasury_funded_amount)
-FUND_AMOUNT=${TREASURY_FUND_AMOUNT:-10000000000000} # 1,000,000 tokens
+FUND_AMOUNT=${TREASURY_FUND_AMOUNT:-$((1000000 * UNIT))} # 1,000,000 tokens
 if [ "$TREASURY_FUNDED" != "$FUND_AMOUNT" ]; then
   log "minting $FUND_AMOUNT stroops of test USDC to treasury"
   stellar contract invoke --id "$USDC" --source-account "$DEPLOYER_KEY" \
@@ -222,8 +234,8 @@ else
   log "treasury already funded with $FUND_AMOUNT stroops"
 fi
 
-json_set --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '.last_deployed_at = $ts'
-json_set --argjson d "$COLLATERAL_DECIMALS" '.collateral_decimals = $d'
+json_set --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson d "$COLLATERAL_DECIMALS" \
+  '.last_deployed_at = $ts | .collateral_decimals = $d'
 
 log "done. Deployment record: $OUT"
 cat "$OUT"

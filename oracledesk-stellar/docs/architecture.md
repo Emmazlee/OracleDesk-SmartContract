@@ -17,19 +17,26 @@ natively unit-testable and mirrored line-for-line in
 [`model/fpmm_model.py`](../model/fpmm_model.py) and
 `agents/core/fpmm.ts` for property testing and off-chain quoting.
 
-**Decimals handling.** `market-core` reads the collateral token's
-`decimals()` once in `__constructor` (rejecting `> 18` with
-`Error::UnsupportedDecimals`), stores it under `DataKey::Decimals`, and
-exposes it via `get_config().decimals`. The economic bounds are derived
-from it rather than hardcoded: `min_seed = 100 * 10^d` and
-`max_sets = 1e8 * 10^d` (`math::bounds_for_decimals`). Because `max_sets`
-reaches `1e26` at 18 decimals, `mul_div_floor` / `mul_div_ceil` use
-256-bit (hi/lo `u128`) intermediates so any result that fits in `i128` is
-returned exactly; the Python and TypeScript mirrors enforce the same
-`i128` bound so off-chain quotes never disagree with the contract.
-Because `Config` gained a `decimals` field, its XDR shape changed —
-consumers of `packages/bindings/` must re-sync their generated bindings
-after upgrading.
+The collateral token's `decimals()` is read once in the constructor and
+stored in instance storage (`DataKey::Decimals`), supporting `0 ..= 18`.
+It is exposed through `Config.decimals` and a dedicated view. The economic
+bounds are derived from it (`math::bounds_for_decimals`):
+`min_seed = 100 * 10^d` and `max_sets = 1e8 * 10^d`. The derived bounds
+replace the old hardcoded 7-decimal `MIN_SEED` / `MAX_SETS` constants in
+contract logic. At 18 decimals `max_sets` is `1e26`, so products of two
+quantities reach `1e52` — beyond `ii28`. That is why `mul_div_floor` /
+`mul_div_ceil` use 256-bit intermediates (a small no_std `u128x2`
+widening multiply and divide inside `math.rs`), so a result that fits in
+`ii28` is always returned exactly and correctness no longer depends on a
+1e30 headroom argument. Rounding directions are unchanged. The Python and
+TypeScript mirrors also expose `bounds_for_decimals` / `boundsForDecimals`
+and assert that results fit `i128`, so off-chain quotes fail where the
+contract would.
+
+Sums of shares and reserves stay far below `i128::MAX` at the maximum
+supported decimals (`max_sets = 1e26`); `settle_value` uses checked
+addition anyway and propagates the error through `redeem` /
+`claim_pool_remainder`.
 
 **Solvency invariant** (holds after every state transition — see the test
 suite for the ones exercised): the contract's own SEP-41 token balance for a
@@ -50,7 +57,7 @@ portion accumulates in a `LpFees(market_id)` side entry, claimable any time
 (before finality too) via `claim_lp_fees`, and also drained by
 `claim_pool_remainder`. Markets created before this change have no
 `FeeTerms` entry and fall back to the old behavior: recipient = whatever
-`DataKey::Treasury` holds at sweep time, `protocol_share_bps = 10_000` —
+`DataKey::Treasury` retains at sweep time, `protocol_share_bps = 10_000` —
 fully backward compatible, no migration transaction needed. The separate
 LP balance (rather than adding fees to the reserves) is deliberate: it does
 not move `k` or the price and maps directly onto the per-LP fee accumulator
@@ -60,7 +67,7 @@ of the future multi-LP design ([wave-issue 02](wave-issues/02-multi-lp-liquidity
 share-count slippage parameters:
 
 - *Deadline + limit price* (#12): `buy_v2` / `sell_v2` take a
-  `deadline` (ledger **timestamp**, unix seconds) checked before anything
+  `deadline` (ledger **(timestamp**, unix seconds) checked before anything
   else, and a `limit_price_bps` bounding the **average execution price**
   (`collateral_in / shares_out` for buys, `collateral_out / shares_in` for
   sells, fee included, compared by cross-multiplication). `0` means "no
@@ -73,8 +80,8 @@ share-count slippage parameters:
   cover the whole band). `max_impact_bps` bounds a single trade's
   |post − pre| YES-price move (`>` — a trade moving exactly the cap
   passes); `band_bps` bounds |post − ledger-open price|, with the reference
-  stored in short-TTL **temporary** storage keyed by ledger sequence, so it
-  resets by itself every ledger. 0 disables either check; legacy markets
+  stored in short-TTL **(temporary** storage keyed by ledger sequence, so
+  it resets by itself every ledger. 0 disables either check; legacy markets
   have no config and are unaffected. Breaker trips revert with
   `PriceImpactTooHigh` / `PriceBandExceeded` and — because Soroban rolls
   back an invocation's events on `Err` — emit **no** event (the error codes
@@ -84,8 +91,8 @@ share-count slippage parameters:
   *Worst-case lock cost.* The band cannot be ratcheted: the reference is
   the ledger-open price, so an attacker who pushes the price to the band
   edge only blocks further trades for the rest of that ledger (~5 s) —
-  and pays the trading fee plus price impact to do it, which arbitrageurs
-  can take back the next ledger. The breakers cannot lock a market across
+  and pays the trading fee plus price impact to do it, which arbitrageurs take back the next ledger. The breakers cannot lock a market across
+
   ledgers by construction.
 
 **Transferability.** `transfer_position(from, to, market_id, outcome,
@@ -97,8 +104,7 @@ address (they could never be redeemed) and over-transfers, and emitting
 new_creator)` (current-creator auth, until `lp_claimed`) moves the single
 LP role — the right to `claim_pool_remainder` and `claim_lp_fees` — and
 emits `LpTransferred`. Both preserve the solvency invariant by
-construction; the position mapping is unchanged down to the "remove
-zero entries" rule.
+construction; the position mapping is unchanged down to the "remove zero entries" rule.
 
 **Resolution commitment**: `resolution_hash` is fixed at `create_market`
 time — see [ADR 0001](adr/0001-resolution-commitment.md) for why.
@@ -106,18 +112,9 @@ time — see [ADR 0001](adr/0001-resolution-commitment.md) for why.
 Lifecycle: `create_market` → `buy`/`sell` (while open; `buy_v2`/`sell_v2`
 with bounds) → `resolve` or `void_market` (resolver-only) → `redeem` per
 holder, `claim_pool_remainder` for the creator/LP, `sweep_fees`
-(permissionless) to the snapshotted fee recipient. Positions and LP
+(permissionless) to the snapshoted fee recipient. Positions and LP
 ownership can change hands at any point via `transfer_position` /
 `transfer_lp`.
-
-**Market size bound.** A market's seed must lie in
-`[min_seed, max_sets]` and `buy` rejects `new_sets > max_sets`
-(`Error::MarketTooLarge`). Both bounds scale with the collateral's
-decimals, so the spam floor and the size cap stay economically meaningful
-whether the token has 0, 7, or 18 decimals. At 18 decimals `max_sets` is
-`1e26`, so products of two quantities can reach `1e52` — far beyond
-`i128` — which is why the fixed-point helpers use 256-bit intermediates
-rather than relying on a headroom argument.
 
 ### resolver
 
@@ -138,7 +135,7 @@ Independent resolution modes, all ultimately calling
 
 Neither mode can be configured until the revealed spec's hash matches the
 market's commitment (`register_price_spec` / `register_signer_spec` — see
-ADR 0001). A guardian can also `guardian_void_market` an unresolvable
+ADR  0001). A guardian can also `guardian_void_market` an unresolvable
 market directly.
 
 #### Bonded disputes (`SignersDisputable`)
@@ -147,12 +144,12 @@ A `SignersDisputable` spec adds an optimistic challenge to Attested mode.
 While a proposal's dispute window is open, anyone can `dispute` it by
 escrowing `dispute_bond` of the collateral token in the resolver. That
 freezes `finalize_signers`, `attest`, `cancel_proposal` and `expire_market`
-(`DisputeActive`) and escalates to the authority committed in the spec: the
+dispute active (`DisputeActive`) and escalates to the authority committed in the spec: the
 guardian (`settle_dispute`) or a `k`-of-`n` committee disjoint from the
 signers (`escalation_attest`). Upholding the proposal resolves to it and
 forfeits the bond to market-core's treasury; any other ruling resolves to the
 verdict (or voids for `Invalid`) and returns the bond. If nobody rules within
-`escalation_timeout` of the dispute, anyone may `expire_dispute`: the market is
+escalation timeout of the dispute, anyone may `expire_dispute`: the market is
 voided and the bond refunded. `guardian_void_market` during a dispute also
 refunds it. Bonds leave escrow only via the permissionless
 `claim_dispute_bond` (pull, so a payee that cannot receive cannot block
@@ -184,7 +181,8 @@ locked behind a missing reveal or a silent committee. See ADR 0001.
 
 The resolver never depends on `market-core`'s Rust crate — see
 [ADR 0002](adr/0002-cross-contract-calls.md) for why, and what that trades
-off.
+off. The vendored `market_core.wasm` fixture is refreshed whenever
+market-core changes.
 
 ### treasury
 
@@ -197,7 +195,7 @@ automated agent can deploy — an agent's own key calling `market-core`
 directly would just be trading its own separate funds, not bypassing a cap
 on the treasury's money. The `*_v2` twins forward the same caps plus
 market-core's deadline / limit-price bounds, so a revert from either layer
-leaves the caps unchanged (the whole invocation is atomic). The treasury's
+laves the caps unchanged (the whole invocation is atomic). The treasury's
 creator-side claims are split the same way the fees are: `collect_market_fees`
 sweeps the **protocol portion** to the treasury, while `agent_claim_lp_fees`
 claims the LP portion for markets the treasury created.
@@ -207,78 +205,4 @@ config setters by design, so redeploying it (bug fix, cap change, agent
 rotation) means deploying a new contract. `set_successor(successor)`
 (admin) records where value may go and emits `SuccessorSet`; then
 `migrate_market(market_id)` (admin, **not** agent) moves the treasury's
-YES/NO position and, if it is still the LP, its LP ownership for one market
-to the successor — market by market, so the footprint stays bounded — and
-emits `MarketMigrated`. The auth model:
-
-- The agent has no path: both migration entrypoints are `require_admin`.
-- The destination is fixed to the configured `Successor` — `migrate_market`
-  takes no destination argument, so even a compromised agent key cannot
-  redirect value, and a compromised admin gains no new power over *user*
-  funds (it could already `withdraw`; migration only moves
-  treasury-owned positions, and the successor is visible on-chain via
-  `SuccessorSet`).
-- The treasury's calls to market-core's `transfer_position` / `transfer_lp`
-  are *direct* calls, so market-core's `require_auth` on the treasury's own
-  address is satisfied implicitly by the invoker rule — no
-  `authorize_as_current_contract` entry is needed (unlike the nested token
-  call in `authorize_token_pull`). This is proven by the
-  `pitfall_migrate_market_needs_only_admin_auth` test, which permits only
-  the admin's signature and no sub-invocations.
-
-A migrated market's `MarketExposure` on the successor starts at zero and the
-old treasury's entry is closed (`open = false`, amount preserved), so the
-successor's caps apply to its own future activity — acceptable because the
-cap is a per-deployment risk bound, not a market-level accounting value.
-Successor-side acceptance (`accept_migration`) is deliberately not
-implemented: it would record provenance only, and the events plus the
-successor's own exposure records are enough for an off-chain dashboard
-([wave-issue 08](wave-issues/08-treasury-exposure-dashboard.md)).
-
-The nested-authorization pitfall this design implies, and how it's handled,
-is documented at length in `contracts/treasury/src/lib.rs` (see
-`authorize_token_pull`) and exercised by
-`pitfall_agent_buy_requires_treasury_self_authorization_for_nested_transfer`
-in the same file's test module — a test that's been verified to fail
-without the fix and pass with it (see the commit history / docs/STATUS.md).
-
-### reasoning-registry
-
-An admin allow-list of agent addresses; a registered agent calls
-`publish_trace(agent, market_id, action, trace_hash, cid)` to record that a
-trace exists, returning a `trace_id`. `verify_trace(trace_id, candidate_hash)`
-is the check a paying subscriber (via `x402/`) or a frontend runs before
-trusting fetched trace content. Traces are also indexed per market
-(`market_trace_count` / `market_trace_at`) via a counter rather than an
-unbounded `Vec`, so the index never has an unbounded-growth storage cost.
-
-**Known limitation**: Soroban RPC only retains a short window of historical
-events. An indexer (Soroban events → Postgres, replayable) is required for
-any UI that wants to list traces/trades older than that window — this is
-one of the seeded `docs/wave-issues/`.
-
-## Off-chain pieces
-
-- **x402/**: an Express service selling reasoning traces for ~$0.01 via
-  `@x402/*`'s exact-payment Stellar scheme. Fetches the trace JSON (from
-  IPFS or `reasoning-registry`'s configured store), recomputes its hash, and
-  serves it only if the hash matches the on-chain record — see
-  `x402/registry-trace-repository.ts`.
-- **agents/**: `core/` is chain-agnostic (FPMM math including the
-  price-impact quoting used to size trades under a breaker cap, trace
-  building, strategy decisions with an optional impact clamp); `stellar/`
-  is the only part that knows about Soroban, wrapping the generated
-  bindings with a dry-run/live switch. The trader always quotes
-  (`quote_buy`) immediately before submitting and derives non-zero
-  `min_shares_out` / `limit_price_bps` bounds plus a deadline from it.
-- **packages/bindings/**: generated TypeScript clients (`scripts/gen-bindings.sh`).
-
-## Known limitations (see docs/STATUS.md for the full, current list)
-
-- Testnet only; unaudited.
-- No indexer yet — anything needing historical events beyond RPC's
-  retention window has no on-chain-native way to query them.
-- Agent-vs-agent liquidity: nothing here stops multiple independent agent
-  deployments (this repo's or a fork's) from trading against the same
-  market-core markets; the treasury's caps bound one agent deployment's own
-  risk, not systemic market behavior.
+`...

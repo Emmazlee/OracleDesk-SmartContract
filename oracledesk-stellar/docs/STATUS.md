@@ -1,11 +1,50 @@
 # Status
 
-Last updated: 2026-09-21 (contributor addenda 2026-10-16, 2026-10-17,
-2026-10-18, 2026-10-19, 2026-10-20 and 2026-10-21 — see the first section after this intro). This is the honest
-account of what
-works, what's unverified, and what's left. Everything marked "verified" was
-demonstrated with real command output in the session that wrote this file,
-not asserted.
+Last updated: 2026-09-21 (contributor addenda 2026-10-16, 2026-10-17 and
+2026-10-18 — see the first sections after this intro). This is the honest
+account of what works, what's unverified, and what's left. Everything marked
+"verified" was demonstrated with real command output in the session that
+wrote this file, not asserted.
+
+## Contributor addendum: 2026-10-18 — decimals-aware market-core
+
+market-core no longer assumes 7-decimal collateral. `__constructor` reads
+`decimals()` from the SEP-41 collateral token once and stores it under
+`DataKey::Decimals`; `get_config` now returns it as `Config.decimals`
+(**XDR shape change** — consumers must re-sync their generated bindings).
+Supported range is `0..=18`; anything above panics with the new
+`Error::UnsupportedDecimals` (#19).
+
+The economic bounds are derived from decimals instead of hardcoded:
+`min_seed = 100 * 10^d` and `max_sets = 1e8 * 10^d` (via
+`math::bounds_for_decimals`). At 18 decimals that is `1e20` and `1e26`
+respectively, so a market can hold realistic token amounts. `MIN_SEED` and
+`MAX_SETS` are no longer used by contract logic; `math::MAX_SETS` survives
+only as a `#[deprecated]` 7-decimal alias for tests.
+
+Because products of two 18-decimal quantities reach `1e52`, well past
+`i128`, `mul_div_floor` / `mul_div_ceil` now compute through a 256-bit
+intermediate (`math::wide`, a no_std `u128x2` hi/lo widening multiply and
+divide). A quotient that fits in `i128` is always returned exactly; only a
+quotient that genuinely exceeds `i128` yields `Error::Overflow`. Rounding
+directions are unchanged, proven by a differential test against the old
+implementation on the legacy domain. `math.rs` remains Env-free and its
+tests run natively.
+
+`settle_value` now uses checked addition and returns `Result`; `redeem` and
+`claim_pool_remainder` propagate the error. The Python (`model/fpmm_model.py`)
+and TypeScript (`agents/core/fpmm.ts`) mirrors gained `bounds_for_decimals` /
+`boundsForDecimals` plus explicit `i128` range checks, so off-chain quotes
+fail exactly where the contract would, and both carry 18-decimal fixtures
+that match the Rust outputs. Vendored `market_core.wasm` copies in
+`contracts/resolver` and `contracts/treasury` were refreshed, and all four
+bindings packages regenerated.
+
+**Not** verified: no testnet redeploy with an 18-decimal token — the
+deployed contracts and `deployments/testnet.json` still use the self-issued
+7-decimal Classic asset from `scripts/deploy-testnet.sh`. The CPU
+instruction delta for `buy` at 7dp vs 18dp was measured with
+`env.cost_estimate().budget()` and is reported in the PR description.
 
 ## Contributor addendum: 2026-10-16
 
@@ -29,61 +68,6 @@ transaction.
 The work above landed on `develop` as merge commit `581a3ec` (PR #153,
 merged 2026-10-16), so the feature-branch reference above is historical and
 `develop` is the source of truth for #8, #10, #12 and #13.
-
-## Contributor addendum: 2026-10-18
-
-Decimals-aware market-core (collateral of any decimals, 0..=18) is
-implemented on a branch targeting `develop`. `__constructor` now reads
-`decimals()` from the collateral SEP-41 token, rejects values above 18 with
-`Error::UnsupportedDecimals` (#19), and stores the value under
-`DataKey::Decimals`; `Config` gained a `decimals: u32` field, so the XDR
-shape changed and all four bindings packages were regenerated. The economic
-bounds are no longer the hardcoded 7-decimal `MIN_SEED` / `MAX_SETS`
-constants: `math::bounds_for_decimals(d)` derives `min_seed = 100 * 10^d`
-and `max_sets = 1e8 * 10^d`, and contract logic reads them via
-`Self::bounds(&env)`. `math::MAX_SETS` is kept only as a `#[deprecated]`
-7-decimal alias for tests. `mul_div_floor` / `mul_div_ceil` now use a
-no_std `u128x2` (hi/lo) widening multiply and divide, so a result that fits
-in `i128` is returned exactly even when the `a * b` intermediate exceeds
-`i128::MAX` (e.g. 18-decimal markets with `max_sets = 1e26`). Rounding
-directions are unchanged, proven by a differential test against the legacy
-implementation on the legacy domain. `settle_value` now uses `checked_add`
-and returns `Result`, propagated by `redeem` and `claim_pool_remainder`.
-The Python (`model/fpmm_model.py`) and TypeScript (`agents/core/fpmm.ts`)
-mirrors gained `bounds_for_decimals` / `boundsForDecimals` and explicit
-`i128` range checks so they fail where the contract would, plus 18-decimal
-fixtures matching the Rust outputs. `math.rs` remains `soroban_sdk`-free
-and its tests run natively. **Not** verified: no testnet redeploy with an
-18-decimal collateral; the vendored `market_core.wasm` copies in
-`contracts/resolver` and `contracts/treasury` were refreshed and their
-suites re-run, but only against a 7-decimal Stellar asset fixture plus a
-new 18-decimal mock token in tests.
-
-### Follow-up: 2026-10-19
-
-The decimals-aware work above is on `develop`. `docs/architecture.md` and
-this file describe the derived bounds (`min_seed = 100 * 10^d`,
-`max_sets = 1e8 * 10^d`, `d` in `0..=18`) and the 256-bit `mul_div`
-intermediates. No 18-decimal collateral has been deployed to testnet yet;
-the only live deployment still uses the self-issued 7-decimal test USDC.
-
-### Follow-up: 2026-10-20
-
-CI syntax check on `agents/core/fpmm.ts` was failing (TS1434/TS1005) after
-the decimals-aware changes; the file was repaired without touching the
-`boundsForDecimals` / `I128_MAX` logic or the 18-decimal fixtures. The
-`cargo test --workspace`, `make lint`, `python3 model/fpmm_model.py` and
-`agents` `npm test` / `npm run build` commands remain the acceptance gate.
-
-### Follow-up: 2026-10-21
-
-The `agents/core/fpmm.ts` syntax repair from 2026-10-20 left the file in a
-state where the local syntax check still failed (TS1434/TS1005). The
-duplicate/partial declaration introduced during that repair was removed and
-the file now parses cleanly; the `boundsForDecimals` / `I128_MAX` logic and
-the 18-decimal fixtures are unchanged. `agents` `npm test` / `npm run build`
-pass again. No contract, model, or bindings changes were made in this
-follow-up.
 
 ## Phase 0: recon and safety
 
@@ -214,11 +198,10 @@ anywhere under `oracledesk-stellar/`.
 - **A real testnet USDC issuer** (e.g. Circle's): not used. `scripts/
   deploy-testnet.sh` deploys a **self-issued** test "USDC" (a real SEP-41
   Stellar Asset Contract, 7 decimals, matching the design doc) rather than
-  guessing at a real issuer's address. The contract now supports any
-  collateral in `0..=18` decimals, but no 18-decimal token has been
-  deployed to testnet; the live deployment remains 7-decimal. This is
-  called out as a
+  guessing at a real issuer's address. This is called out as a
   `TODO(maintainer)` in `scripts/deploy-testnet.sh` and `.env.example`.
+  market-core itself is no longer 7-decimal-only (see the 2026-10-18
+  addendum), but the deployed testnet market still is.
 - **Actually buying a trace through x402** (payment settlement via a real
   facilitator): not attempted. No x402-on-Stellar facilitator URL is known
   or hardcoded anywhere in this repo; finding and verifying one needs
@@ -304,13 +287,6 @@ markers in the files themselves:
   lifetime cap on capital ever committed to one market), documented in
   `contracts/treasury/src/lib.rs`'s comments, but worth stating here since
   it's easy to misread as a bug.
-- **Collateral decimals are fixed at deploy time** and must be in `0..=18`.
-  `__constructor` calls `decimals()` on the collateral token, so the token
-  must already be deployed; a token reporting more than 18 decimals is
-  rejected with `Error::UnsupportedDecimals`. Rebasing and
-  fee-on-transfer tokens are out of scope (see the solvency-accounting
-  issue). Market size bounds scale with decimals: `min_seed = 100 * 10^d`
-  and `max_sets = 1e8 * 10^d`.
 
 ## Reproducing this
 

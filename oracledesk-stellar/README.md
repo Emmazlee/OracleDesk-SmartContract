@@ -14,7 +14,10 @@ This is the Stellar/Soroban native port of the system originally built for
 the Agora Hackathon on Arc + Polygon (Solidity, Polymarket execution, Circle
 CCTP/Wallets). None of that Arc-era execution stack is part of this repo —
 markets, trading, resolution, the reasoning registry, and the agent treasury
-are all native Soroban contracts, collateralized in a SEP-41 USDC token.
+are all native Soroban contracts, collateralized in a SEP-41 token. market-core
+reads the collateral's `decimals()` at deploy and derives its economic bounds
+(`min_seed = 100 * 10^d`, `max_sets = 1e8 * 10^d`) for any `d` in `0..=18`, so
+7-decimal Classic USDC and 18-decimal Soroban-native tokens both work.
 Polymarket survives only as an optional, execution-free reference price an
 agent's strategy may read (see `agents/core/strategy.ts`).
 
@@ -142,5 +145,3 @@ end to end.
 ## License
 
 [MIT](LICENSE)
-
-> **Collateral decimals:** `market-core` reads the collateral token's `decimals()` at deploy (supported range `0..=18`) and derives its economic bounds from it (`min_seed = 100 * 10^d`, `max_sets = 1e8 * 10^d`). Fixed-point multiply-divide uses 256-bit intermediates, so markets are not limited to 7-decimal assets. `Config` exposes `decimals`; consumers must regenerate bindings after upgrading.
