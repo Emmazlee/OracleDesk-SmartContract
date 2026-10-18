@@ -32,10 +32,23 @@ mkdir -p "$OUT_DIR"
 for wasm_name in "${!NAMES[@]}"; do
   pkg_name=${NAMES[$wasm_name]}
   echo "==> generating bindings for $pkg_name" >&2
+  # `--overwrite` deletes files it does not generate, including the committed
+  # package-lock.json — which would make CI's "bindings are stale" diff fail on
+  # every run. Stash the lockfile around the call so regeneration touches only
+  # the generated files.
+  lock=""
+  if [ -f "$OUT_DIR/$pkg_name/package-lock.json" ]; then
+    lock=$(mktemp)
+    cp "$OUT_DIR/$pkg_name/package-lock.json" "$lock"
+  fi
   stellar contract bindings typescript \
     --wasm "$WASM_DIR/$wasm_name.wasm" \
     --output-dir "$OUT_DIR/$pkg_name" \
     --overwrite
+  if [ -n "$lock" ]; then
+    cp "$lock" "$OUT_DIR/$pkg_name/package-lock.json"
+    rm -f "$lock"
+  fi
   # The CLI names the package after the wasm (e.g. "treasury"); give it a
   # stable scoped name so agents/ and any frontend can depend on it
   # unambiguously (`file:../packages/bindings/<name>` in package.json).

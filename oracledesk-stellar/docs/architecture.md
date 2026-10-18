@@ -92,7 +92,6 @@ share-count slippage parameters:
   the ledger-open price, so an attacker who pushes the price to the band
   edge only blocks further trades for the rest of that ledger (~5 s) —
   and pays the trading fee plus price impact to do it, which arbitrageurs take back the next ledger. The breakers cannot lock a market across
-
   ledgers by construction.
 
 **Transferability.** `transfer_position(from, to, market_id, outcome,
@@ -205,4 +204,78 @@ config setters by design, so redeploying it (bug fix, cap change, agent
 rotation) means deploying a new contract. `set_successor(successor)`
 (admin) records where value may go and emits `SuccessorSet`; then
 `migrate_market(market_id)` (admin, **not** agent) moves the treasury's
-`...
+YES/NO position and, if it is still the LP, its LP ownership for one market
+to the successor — market by market, so the footprint stays bounded — and
+emits `MarketMigrated`. The auth model:
+
+- The agent has no path: both migration entrypoints are `require_admin`.
+- The destination is fixed to the configured `Successor` — `migrate_market`
+  takes no destination argument, so even a compromised agent key cannot
+  redirect value, and a compromised admin gains no new power over *user*
+  funds (it could already `withdraw`; migration only moves
+  treasury-owned positions, and the successor is visible on-chain via
+  `SuccessorSet`).
+- The treasury's calls to market-core's `transfer_position` / `transfer_lp`
+  are *direct* calls, so market-core's `require_auth` on the treasury's own
+  address is satisfied implicitly by the invoker rule — no
+  `authorize_as_current_contract` entry is needed (unlike the nested token
+  call in `authorize_token_pull`). This is proven by the
+  `pitfall_migrate_market_needs_only_admin_auth` test, which permits only
+  the admin's signature and no sub-invocations.
+
+A migrated market's `MarketExposure` on the successor starts at zero and the
+old treasury's entry is closed (`open = false`, amount preserved), so the
+successor's caps apply to its own future activity — acceptable because the
+cap is a per-deployment risk bound, not a market-level accounting value.
+Successor-side acceptance (`accept_migration`) is deliberately not
+implemented: it would record provenance only, and the events plus the
+successor's own exposure records are enough for an off-chain dashboard
+([wave-issue 08](wave-issues/08-treasury-exposure-dashboard.md)).
+
+The nested-authorization pitfall this design implies, and how it's handled,
+is documented at length in `contracts/treasury/src/lib.rs` (see
+`authorize_token_pull`) and exercised by
+`pitfall_agent_buy_requires_treasury_self_authorization_for_nested_transfer`
+in the same file's test module — a test that's been verified to fail
+without the fix and pass with it (see the commit history / docs/STATUS.md).
+
+### reasoning-registry
+
+An admin allow-list of agent addresses; a registered agent calls
+`publish_trace(agent, market_id, action, trace_hash, cid)` to record that a
+trace exists, returning a `trace_id`. `verify_trace(trace_id, candidate_hash)`
+is the check a paying subscriber (via `x402/`) or a frontend runs before
+trusting fetched trace content. Traces are also indexed per market
+(`market_trace_count` / `market_trace_at`) via a counter rather than an
+unbounded `Vec`, so the index never has an unbounded-growth storage cost.
+
+**Known limitation**: Soroban RPC only retains a short window of historical
+events. An indexer (Soroban events → Postgres, replayable) is required for
+any UI that wants to list traces/trades older than that window — this is
+one of the seeded `docs/wave-issues/`.
+
+## Off-chain pieces
+
+- **x402/**: an Express service selling reasoning traces for ~$0.01 via
+  `@x402/*`'s exact-payment Stellar scheme. Fetches the trace JSON (from
+  IPFS or `reasoning-registry`'s configured store), recomputes its hash, and
+  serves it only if the hash matches the on-chain record — see
+  `x402/registry-trace-repository.ts`.
+- **agents/**: `core/` is chain-agnostic (FPMM math including the
+  price-impact quoting used to size trades under a breaker cap, trace
+  building, strategy decisions with an optional impact clamp); `stellar/`
+  is the only part that knows about Soroban, wrapping the generated
+  bindings with a dry-run/live switch. The trader always quotes
+  (`quote_buy`) immediately before submitting and derives non-zero
+  `min_shares_out` / `limit_price_bps` bounds plus a deadline from it.
+- **packages/bindings/**: generated TypeScript clients (`scripts/gen-bindings.sh`).
+
+## Known limitations (see docs/STATUS.md for the full, current list)
+
+- Testnet only; unaudited.
+- No indexer yet — anything needing historical events beyond RPC's
+  retention window has no on-chain-native way to query them.
+- Agent-vs-agent liquidity: nothing here stops multiple independent agent
+  deployments (this repo's or a fork's) from trading against the same
+  market-core markets; the treasury's caps bound one agent deployment's own
+  risk, not systemic market behavior.

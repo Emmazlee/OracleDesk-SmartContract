@@ -69,6 +69,9 @@ export class StellarAdapter {
   private readonly publicKey?: string;
 
   constructor(private readonly opts: StellarAdapterOptions) {
+    if (opts.mode !== "dry-run" && opts.mode !== "live") {
+      throw new Error(`unknown mode ${JSON.stringify(opts.mode)}: expected "dry-run" or "live"`);
+    }
     if (opts.mode === "live") {
       if (!opts.agentSecret) throw new Error("live mode requires agentSecret");
       const keypair = Keypair.fromSecret(opts.agentSecret);
@@ -143,6 +146,70 @@ export class StellarAdapter {
     return this.run("treasury", "@oracledesk/bindings-treasury", "agent_buy", args, (client) =>
       client.agent_buy(args),
     );
+  }
+
+  /**
+   * `agent_buy` with contract-enforced bounds: the trade reverts past
+   * `deadline` (ledger timestamp, unix seconds) or when the average
+   * execution price is worse than `limit_price_bps` (fee included; 0 = no
+   * limit for buys). On-chain this is the treasury's `agent_buy_v2`.
+   */
+  async agentBuyV2(args: {
+    market_id: bigint;
+    outcome: { tag: "Yes" | "No"; values: void };
+    collateral_in: bigint;
+    min_shares_out: bigint;
+    limit_price_bps: number;
+    deadline: bigint;
+  }): Promise<AdapterResult<bigint>> {
+    return this.run("treasury", "@oracledesk/bindings-treasury", "agent_buy_v2", args, (client) =>
+      client.agent_buy_v2(args),
+    );
+  }
+
+  async agentSell(args: {
+    market_id: bigint;
+    outcome: { tag: "Yes" | "No"; values: void };
+    collateral_out: bigint;
+    max_shares_in: bigint;
+  }): Promise<AdapterResult<bigint>> {
+    return this.run("treasury", "@oracledesk/bindings-treasury", "agent_sell", args, (client) =>
+      client.agent_sell(args),
+    );
+  }
+
+  /**
+   * `agent_sell` with contract-enforced bounds. For sells a
+   * `limit_price_bps` of 0 is trivially satisfied on-chain (no
+   * protection) — pass the fair value you are willing to sell at.
+   */
+  async agentSellV2(args: {
+    market_id: bigint;
+    outcome: { tag: "Yes" | "No"; values: void };
+    collateral_out: bigint;
+    max_shares_in: bigint;
+    limit_price_bps: number;
+    deadline: bigint;
+  }): Promise<AdapterResult<bigint>> {
+    return this.run("treasury", "@oracledesk/bindings-treasury", "agent_sell_v2", args, (client) =>
+      client.agent_sell_v2(args),
+    );
+  }
+
+  /**
+   * Simulates market-core's `quote_buy` (read-only — never signs or
+   * submits) and returns the quoted shares. Unlike the mutating wrappers
+   * this also runs in dry-run mode, so a dry-run trader can still derive
+   * its `min_shares_out` / `limit_price_bps` bounds.
+   */
+  async quoteBuy(args: {
+    market_id: bigint;
+    outcome: { tag: "Yes" | "No"; values: void };
+    collateral_in: bigint;
+  }): Promise<bigint> {
+    const client = await this.client<any>("market_core", "@oracledesk/bindings-market-core");
+    const { result } = await client.quote_buy(args);
+    return result as bigint;
   }
 
   async publishTrace(args: {
