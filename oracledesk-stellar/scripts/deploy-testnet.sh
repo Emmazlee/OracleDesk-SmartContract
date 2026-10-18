@@ -25,6 +25,10 @@ MAX_TRADE=${MAX_TRADE:-2000000000}   # 200 USDC
 MAX_MARKET=${MAX_MARKET:-5000000000} # 500 USDC
 MAX_DAILY=${MAX_DAILY:-10000000000}  # 1,000 USDC
 DEFAULT_FEE_BPS=${DEFAULT_FEE_BPS:-100} # 1%
+# Portion of each fee kept by the protocol treasury (bps). The remainder
+# accrues to the market creator, claimable before resolution. 10000 = the
+# protocol keeps everything (pre-#8 behavior).
+PROTOCOL_FEE_SHARE_BPS=${PROTOCOL_FEE_SHARE_BPS:-10000}
 
 log() { echo "==> $*" >&2; }
 
@@ -110,7 +114,8 @@ if [ -z "$MARKET_CORE" ]; then
     --collateral "$USDC" \
     --treasury "$DEPLOYER" \
     --resolver "$DEPLOYER" \
-    --default_fee_bps "$DEFAULT_FEE_BPS")
+    --default_fee_bps "$DEFAULT_FEE_BPS" \
+    --protocol_fee_share_bps "$PROTOCOL_FEE_SHARE_BPS")
   json_set --arg id "$MARKET_CORE" '.contracts.market_core = $id'
 else
   log "market-core already deployed: $MARKET_CORE"

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { calcBuy, priceAfterBuy } from "./fpmm.js";
 import { decideMarketProposal, decideTrade } from "./strategy.js";
 
 test("decideMarketProposal skips a signal with no actionable estimate", () => {
@@ -67,4 +68,72 @@ test("decideTrade buys No when the market overprices Yes", () => {
   );
   assert.equal(d.action, "buy");
   assert.equal(d.outcome, "No");
+});
+
+// The 100-sets pool at 50% with a 1% fee used by the calcBuy reference
+// example: 10 USDC moves the price 470bps, so a 200bps cap must clamp well
+// below the requested size.
+const deepMarket = {
+  marketId: 1,
+  question: "q",
+  yesBps: 5000,
+  closeTime: 0,
+  reserveYesStroops: 1_000_000_000n,
+  reserveNoStroops: 1_000_000_000n,
+  feeBps: 100,
+};
+
+test("decideTrade clamps the size under maxImpactBps", () => {
+  const opts = { minEdgeBps: 100, tradeSizeStroops: 100_000_000n, maxImpactBps: 200 };
+  const d = decideTrade(deepMarket, 6000, opts);
+  assert.equal(d.action, "buy");
+  const size = d.collateralInStroops!;
+  assert.ok(size > 0n && size < opts.tradeSizeStroops, `size=${size}`);
+  // The clamped size respects the cap...
+  const q = calcBuy(deepMarket.reserveYesStroops, deepMarket.reserveNoStroops, size, 100n);
+  assert.ok(priceAfterBuy(true, q) - 5000n <= 200n);
+  // ...and the clamp was actually needed.
+  const full = calcBuy(deepMarket.reserveYesStroops, deepMarket.reserveNoStroops, opts.tradeSizeStroops, 100n);
+  assert.ok(priceAfterBuy(true, full) - 5000n > 200n);
+});
+
+test("decideTrade leaves the size alone when maxImpactBps is 0 (disabled)", () => {
+  const d = decideTrade(deepMarket, 6000, {
+    minEdgeBps: 100,
+    tradeSizeStroops: 100_000_000n,
+    maxImpactBps: 0,
+  });
+  assert.equal(d.action, "buy");
+  assert.equal(d.collateralInStroops, 100_000_000n);
+});
+
+test("decideTrade under maxImpactBps requires reserves on the market state", () => {
+  assert.throws(
+    () =>
+      decideTrade(
+        { marketId: 1, question: "q", yesBps: 5000, closeTime: 0 },
+        6000,
+        { minEdgeBps: 100, tradeSizeStroops: 1_000_000n, maxImpactBps: 200 },
+      ),
+    /reserveYesStroops/,
+  );
+});
+
+test("decideTrade skips when every size would trip the impact cap", () => {
+  // A 100-stroop pool: even the smallest executable buy moves the floored
+  // price by tens of bps, so a 10bps cap leaves no size at all.
+  const d = decideTrade(
+    {
+      marketId: 1,
+      question: "q",
+      yesBps: 5000,
+      closeTime: 0,
+      reserveYesStroops: 100n,
+      reserveNoStroops: 100n,
+      feeBps: 100,
+    },
+    6000,
+    { minEdgeBps: 100, tradeSizeStroops: 50n, maxImpactBps: 10 },
+  );
+  assert.equal(d.action, "skip");
 });

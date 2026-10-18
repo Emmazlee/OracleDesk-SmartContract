@@ -1,8 +1,33 @@
 # Status
 
-Last updated: 2026-09-21. This is the honest account of what works, what's
-unverified, and what's left. Everything marked "verified" was demonstrated
-with real command output in the session that wrote this file, not asserted.
+Last updated: 2026-09-21 (contributor addenda 2026-10-16 and 2026-10-17 —
+see the first section after this intro). This is the honest account of what
+works, what's unverified, and what's left. Everything marked "verified" was
+demonstrated with real command output in the session that wrote this file,
+not asserted.
+
+## Contributor addendum: 2026-10-16
+
+Fee split + recipient snapshot (#8), per-market circuit breakers (#10),
+trade deadlines and limit prices (#12), and transferable positions/LP plus
+treasury migration (#13) are implemented on
+`feat/fees-breakers-bounds-and-transfers` (PR against `develop`; design
+notes in `docs/architecture.md`). Verified in the contributor session:
+`cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`
+and `cargo test --workspace` (now **87** tests: market-core 54, resolver 6,
+reasoning-registry 6, treasury 21 — superseding the 40-test count below),
+`python3 model/fpmm_model.py`, agents (36 tests) and x402 (5 tests) with the
+regenerated bindings, `make build` and `make bindings` with only the
+intended diffs. **Not** (re)verified: no testnet redeploy — the deployed
+contracts and `deployments/testnet.json` predate these changes, so the new
+entrypoints have contract-level and off-chain tests only, not a real-ledger
+transaction.
+
+### Merge follow-up: 2026-10-17
+
+The work above landed on `develop` as merge commit `581a3ec` (PR #153,
+merged 2026-10-16), so the feature-branch reference above is historical and
+`develop` is the source of truth for #8, #10, #12 and #13.
 
 ## Phase 0: recon and safety
 
@@ -206,6 +231,11 @@ markers in the files themselves:
   independent agent deployments from trading against the same
   `market-core` markets. The treasury's caps bound one deployment's own
   risk, not systemic market behavior.
+- **Expiry cannot help an oracle the creator controls.** `expire_market`
+  voids unresolvable markets 30 days after close, but a creator who commits
+  to a feed they control can still decide the outcome of a *resolvable*
+  price market; the commitment does not bind oracle identity (ADR 0001,
+  "Liveness fallback").
 - **Single admin key per contract**, no multisig/timelock. A compromised
   admin key has a large blast radius per contract (see
   `docs/wave-issues/12-architecture-deep-dive-and-threat-model.md`, which

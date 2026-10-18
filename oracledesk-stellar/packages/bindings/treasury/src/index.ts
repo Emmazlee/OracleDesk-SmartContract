@@ -33,10 +33,6 @@ if (typeof window !== "undefined") {
 
 
 
-export type Outcome = {tag: "Yes", values: void} | {tag: "No", values: void};
-
-export type Category = {tag: "Crypto", values: void} | {tag: "Macro", values: void} | {tag: "Geopolitics", values: void} | {tag: "Sports", values: void} | {tag: "Culture", values: void} | {tag: "Other", values: void};
-
 export const Errors = {
   1: {message:"NotInitialized"},
   2: {message:"Unauthorized"},
@@ -47,7 +43,8 @@ export const Errors = {
   7: {message:"DailyCapExceeded"},
   8: {message:"MarketNotOpen"},
   9: {message:"InsufficientBalance"},
-  10: {message:"Paused"}
+  10: {message:"Paused"},
+  11: {message:"NoSuccessor"}
 }
 
 
@@ -68,6 +65,12 @@ export interface RiskConfig {
 
 
 
+
+
+
+export type Outcome = {tag: "Yes", values: void} | {tag: "No", values: void};
+
+export type Category = {tag: "Crypto", values: void} | {tag: "Macro", values: void} | {tag: "Geopolitics", values: void} | {tag: "Sports", values: void} | {tag: "Culture", values: void} | {tag: "Other", values: void};
 
 export interface Client {
   /**
@@ -125,9 +128,59 @@ export interface Client {
   daily_usage: (options?: MethodOptions) => Promise<AssembledTransaction<Result<DailyUsage>>>
 
   /**
+   * Construct and simulate a agent_buy_v2 transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * `agent_buy` with a per-share limit price (`limit_price_bps`, 0 = none)
+   * and a deadline (unix seconds, network time). market-core's `buy_v2`
+   * enforces both; an expired or out-of-limit trade reverts the whole
+   * invocation, so the treasury's caps are never consumed by a reverted
+   * trade.
+   */
+  agent_buy_v2: ({market_id, outcome, collateral_in, min_shares_out, limit_price_bps, deadline}: {market_id: u64, outcome: Outcome, collateral_in: i128, min_shares_out: i128, limit_price_bps: u32, deadline: u64}, options?: MethodOptions) => Promise<AssembledTransaction<Result<i128>>>
+
+  /**
+   * Construct and simulate a agent_sell_v2 transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * `agent_sell` with a per-share limit price (`limit_price_bps`, 0 = no
+   * limit) and a deadline (unix seconds, network time), both enforced by
+   * market-core's `sell_v2`.
+   */
+  agent_sell_v2: ({market_id, outcome, collateral_out, max_shares_in, limit_price_bps, deadline}: {market_id: u64, outcome: Outcome, collateral_out: i128, max_shares_in: i128, limit_price_bps: u32, deadline: u64}, options?: MethodOptions) => Promise<AssembledTransaction<Result<i128>>>
+
+  /**
+   * Construct and simulate a set_successor transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Sets the successor treasury that `migrate_market` hands positions and
+   * the LP role to. Admin-only; overwrites any previous successor (the
+   * `SuccessorSet` events are the audit trail).
+   */
+  set_successor: ({successor}: {successor: string}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
+   * Construct and simulate a migrate_market transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Moves the treasury's position in `market_id` — and the LP role, when
+   * the treasury is the market's creator and has not claimed the remainder
+   * yet — to the successor set via `set_successor`, then closes the local
+   * exposure. Admin-only: relocating capital is not an agent trading
+   * action, and the agent key must not be able to drain positions.
+   * 
+   * market-core's `transfer_position` / `transfer_lp` require the treasury
+   * itself to authorize. Because the treasury is their *direct* caller
+   * here, the implicit invoker authorization covers both — no
+   * `authorize_as_current_contract` entry is needed (unlike the nested
+   * token transfer in `agent_buy`, see `docs/adr/0002-treasury-nested-auth.md`).
+   */
+  migrate_market: ({market_id}: {market_id: u64}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
    * Construct and simulate a available_capital transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
    */
   available_capital: (options?: MethodOptions) => Promise<AssembledTransaction<Result<i128>>>
+
+  /**
+   * Construct and simulate a agent_claim_lp_fees transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Claims the market's LP fee share for a market the treasury created.
+   * The LP portion accrues separately on market-core (see its `claim_lp_fees`);
+   * this is that claim, agent-gated like the other trading entrypoints.
+   */
+  agent_claim_lp_fees: ({market_id}: {market_id: u64}, options?: MethodOptions) => Promise<AssembledTransaction<Result<i128>>>
 
   /**
    * Construct and simulate a agent_create_market transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
@@ -138,7 +191,12 @@ export interface Client {
 
   /**
    * Construct and simulate a collect_market_fees transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Pulls accrued fees from a configured market-core contract.
+   * Pulls accrued **protocol** fees from a configured market-core contract.
+   * 
+   * Only the protocol's share of each market's fees: the LP portion accrues
+   * separately on market-core and belongs to the market's creator — for
+   * agent-created markets that is the treasury itself, via
+   * `agent_claim_lp_fees`.
    */
   collect_market_fees: ({market_id}: {market_id: u64}, options?: MethodOptions) => Promise<AssembledTransaction<Result<i128>>>
 
@@ -168,13 +226,18 @@ export class Client extends ContractClient {
   }
   constructor(public readonly options: ContractClientOptions) {
     super(
-      new ContractSpec([ "AAAAAgAAAAAAAAAAAAAAB091dGNvbWUAAAAAAgAAAAAAAAAAAAAAA1llcwAAAAAAAAAAAAAAAAJObwAA",
-        "AAAAAgAAAAAAAAAAAAAACENhdGVnb3J5AAAABgAAAAAAAAAAAAAABkNyeXB0bwAAAAAAAAAAAAAAAAAFTWFjcm8AAAAAAAAAAAAAAAAAAAtHZW9wb2xpdGljcwAAAAAAAAAAAAAAAAZTcG9ydHMAAAAAAAAAAAAAAAAAB0N1bHR1cmUAAAAAAAAAAAAAAAAFT3RoZXIAAAA=",
-        "AAAABAAAAAAAAAAAAAAABUVycm9yAAAAAAAACgAAAAAAAAAOTm90SW5pdGlhbGl6ZWQAAAAAAAEAAAAAAAAADFVuYXV0aG9yaXplZAAAAAIAAAAAAAAADUludmFsaWRDb25maWcAAAAAAAADAAAAAAAAAA1JbnZhbGlkQW1vdW50AAAAAAAABAAAAAAAAAAQVHJhZGVDYXBFeGNlZWRlZAAAAAUAAAAAAAAAEU1hcmtldENhcEV4Y2VlZGVkAAAAAAAABgAAAAAAAAAQRGFpbHlDYXBFeGNlZWRlZAAAAAcAAAAAAAAADU1hcmtldE5vdE9wZW4AAAAAAAAIAAAAAAAAABNJbnN1ZmZpY2llbnRCYWxhbmNlAAAAAAkAAAAAAAAABlBhdXNlZAAAAAAACg==",
-        "AAAAAAAAADxSZWRlZW1zIHRoZSB0cmVhc3VyeSdzIHBvc2l0aW9uIGluIGEgcmVzb2x2ZWQvdm9pZGVkIG1hcmtldC4AAAAGcmVkZWVtAAAAAAABAAAAAAAAAAltYXJrZXRfaWQAAAAAAAAGAAAAAQAAA+kAAAALAAAAAw==",
-        "AAAAAAAAAAAAAAAHZGVwb3NpdAAAAAACAAAAAAAAAARmcm9tAAAAEwAAAAAAAAAGYW1vdW50AAAAAAALAAAAAQAAA+kAAAACAAAAAw==",
+      new ContractSpec([ "AAAABAAAAAAAAAAAAAAABUVycm9yAAAAAAAACwAAAAAAAAAOTm90SW5pdGlhbGl6ZWQAAAAAAAEAAAAAAAAADFVuYXV0aG9yaXplZAAAAAIAAAAAAAAADUludmFsaWRDb25maWcAAAAAAAADAAAAAAAAAA1JbnZhbGlkQW1vdW50AAAAAAAABAAAAAAAAAAQVHJhZGVDYXBFeGNlZWRlZAAAAAUAAAAAAAAAEU1hcmtldENhcEV4Y2VlZGVkAAAAAAAABgAAAAAAAAAQRGFpbHlDYXBFeGNlZWRlZAAAAAcAAAAAAAAADU1hcmtldE5vdE9wZW4AAAAAAAAIAAAAAAAAABNJbnN1ZmZpY2llbnRCYWxhbmNlAAAAAAkAAAAAAAAABlBhdXNlZAAAAAAACgAAAAAAAAALTm9TdWNjZXNzb3IAAAAACw==",
         "AAAAAQAAAAAAAAAAAAAACkRhaWx5VXNhZ2UAAAAAAAIAAAAAAAAABmFtb3VudAAAAAAACwAAAAAAAAAJZGF5X3N0YXJ0AAAAAAAABg==",
         "AAAAAQAAAAAAAAAAAAAAClJpc2tDb25maWcAAAAAAAYAAAAAAAAABWFnZW50AAAAAAAAEwAAAAAAAAAKY29sbGF0ZXJhbAAAAAAAEwAAAAAAAAALbWFya2V0X2NvcmUAAAAAEwAAAAAAAAAJbWF4X2RhaWx5AAAAAAAACwAAAAAAAAAKbWF4X21hcmtldAAAAAAACwAAAAAAAAAJbWF4X3RyYWRlAAAAAAAACw==",
+        "AAAABQAAAAAAAAAAAAAADFN1Y2Nlc3NvclNldAAAAAEAAAANc3VjY2Vzc29yX3NldAAAAAAAAAIAAAAAAAAAA29sZAAAAAPoAAAAEwAAAAAAAAAAAAAAA25ldwAAAAATAAAAAAAAAAI=",
+        "AAAABQAAAAAAAAAAAAAADUZlZXNDb2xsZWN0ZWQAAAAAAAABAAAADmZlZXNfY29sbGVjdGVkAAAAAAACAAAAAAAAAAltYXJrZXRfaWQAAAAAAAAGAAAAAQAAAAAAAAAGYW1vdW50AAAAAAALAAAAAAAAAAI=",
+        "AAAABQAAAAAAAAAAAAAADk1hcmtldE1pZ3JhdGVkAAAAAAABAAAAD21hcmtldF9taWdyYXRlZAAAAAAFAAAAAAAAAAltYXJrZXRfaWQAAAAAAAAGAAAAAQAAAAAAAAAJc3VjY2Vzc29yAAAAAAAAEwAAAAEAAAAAAAAAA3llcwAAAAALAAAAAAAAAAAAAAACbm8AAAAAAAsAAAAAAAAAAAAAAAJscAAAAAAAAQAAAAAAAAAC",
+        "AAAABQAAAAAAAAAAAAAADlBvc2l0aW9uQ2xvc2VkAAAAAAABAAAAD3Bvc2l0aW9uX2Nsb3NlZAAAAAACAAAAAAAAAAltYXJrZXRfaWQAAAAAAAAGAAAAAQAAAAAAAAAGYW1vdW50AAAAAAALAAAAAAAAAAI=",
+        "AAAABQAAAAAAAAAAAAAAD1RyYWRlQXV0aG9yaXplZAAAAAABAAAAEHRyYWRlX2F1dGhvcml6ZWQAAAAFAAAAAAAAAAltYXJrZXRfaWQAAAAAAAAGAAAAAQAAAAAAAAAFYWdlbnQAAAAAAAATAAAAAQAAAAAAAAAGYW1vdW50AAAAAAALAAAAAAAAAAAAAAAMbWFya2V0X3RvdGFsAAAACwAAAAAAAAAAAAAAC2RhaWx5X3RvdGFsAAAAAAsAAAAAAAAAAg==",
+        "AAAAAgAAAAAAAAAAAAAAB091dGNvbWUAAAAAAgAAAAAAAAAAAAAAA1llcwAAAAAAAAAAAAAAAAJObwAA",
+        "AAAAAgAAAAAAAAAAAAAACENhdGVnb3J5AAAABgAAAAAAAAAAAAAABkNyeXB0bwAAAAAAAAAAAAAAAAAFTWFjcm8AAAAAAAAAAAAAAAAAAAtHZW9wb2xpdGljcwAAAAAAAAAAAAAAAAZTcG9ydHMAAAAAAAAAAAAAAAAAB0N1bHR1cmUAAAAAAAAAAAAAAAAFT3RoZXIAAAA=",
+        "AAAAAAAAADxSZWRlZW1zIHRoZSB0cmVhc3VyeSdzIHBvc2l0aW9uIGluIGEgcmVzb2x2ZWQvdm9pZGVkIG1hcmtldC4AAAAGcmVkZWVtAAAAAAABAAAAAAAAAAltYXJrZXRfaWQAAAAAAAAGAAAAAQAAA+kAAAALAAAAAw==",
+        "AAAAAAAAAAAAAAAHZGVwb3NpdAAAAAACAAAAAAAAAARmcm9tAAAAEwAAAAAAAAAGYW1vdW50AAAAAAALAAAAAQAAA+kAAAACAAAAAw==",
         "AAAAAAAAAAAAAAAId2l0aGRyYXcAAAACAAAAAAAAAAJ0bwAAAAAAEwAAAAAAAAAGYW1vdW50AAAAAAALAAAAAQAAA+kAAAACAAAAAw==",
         "AAAAAAAAAENCdXlzIGBvdXRjb21lYCBzaGFyZXMgaW4gYW4gZXhpc3RpbmcgbWFya2V0IHVzaW5nIHRyZWFzdXJ5IGNhcGl0YWwuAAAAAAlhZ2VudF9idXkAAAAAAAAEAAAAAAAAAAltYXJrZXRfaWQAAAAAAAAGAAAAAAAAAAdvdXRjb21lAAAAB9AAAAAHT3V0Y29tZQAAAAAAAAAADWNvbGxhdGVyYWxfaW4AAAAAAAALAAAAAAAAAA5taW5fc2hhcmVzX291dAAAAAAACwAAAAEAAAPpAAAACwAAAAM=",
         "AAAAAAAAAPVTZWxscyBgb3V0Y29tZWAgc2hhcmVzIGJhY2sgaW50byB0aGUgcG9vbCBmb3IgZXhhY3RseQpgY29sbGF0ZXJhbF9vdXRgLiBUaGlzIHJldHVybnMgY2FwaXRhbCB0byB0aGUgdHJlYXN1cnkgKG1hcmtldC1jb3JlCnBheXMgb3V0IG9mIGl0cyBvd24gYmFsYW5jZSksIHNvIGl0IGlzIG5vdCBjYXBwZWQgYW5kIGRvZXMgbm90IG5lZWQKdGhlIG5lc3RlZC10cmFuc2ZlciBwcmUtYXV0aG9yaXphdGlvbiB0aGF0IGJ1eWluZyBkb2VzLgAAAAAAAAphZ2VudF9zZWxsAAAAAAAEAAAAAAAAAAltYXJrZXRfaWQAAAAAAAAGAAAAAAAAAAdvdXRjb21lAAAAB9AAAAAHT3V0Y29tZQAAAAAAAAAADmNvbGxhdGVyYWxfb3V0AAAAAAALAAAAAAAAAA1tYXhfc2hhcmVzX2luAAAAAAAACwAAAAEAAAPpAAAACwAAAAM=",
@@ -182,13 +245,15 @@ export class Client extends ContractClient {
         "AAAAAAAAAAAAAAAKc2V0X3BhdXNlZAAAAAAAAQAAAAAAAAAGcGF1c2VkAAAAAAABAAAAAQAAA+kAAAACAAAAAw==",
         "AAAAAAAAAK1NYXJrcyBhIG1hcmtldCdzIGV4cG9zdXJlIGFzIGV4aXRlZC4gUHVyZSBib29ra2VlcGluZyAoc2VlCmBNYXJrZXRFeHBvc3VyZWApIGZvciB0aGUgZnV0dXJlIGV4cG9zdXJlIGRhc2hib2FyZDsgaXQgZG9lcyBub3QgbW92ZQpmdW5kcyBvciBmcmVlIHRoZSBjdW11bGF0aXZlIHBlci1tYXJrZXQgY2FwLgAAAAAAAAtjbG9zZV90cmFkZQAAAAABAAAAAAAAAAltYXJrZXRfaWQAAAAAAAAGAAAAAQAAA+kAAAALAAAAAw==",
         "AAAAAAAAAAAAAAALZGFpbHlfdXNhZ2UAAAAAAAAAAAEAAAPpAAAH0AAAAApEYWlseVVzYWdlAAAAAAAD",
-        "AAAABQAAAAAAAAAAAAAADUZlZXNDb2xsZWN0ZWQAAAAAAAABAAAADmZlZXNfY29sbGVjdGVkAAAAAAACAAAAAAAAAAltYXJrZXRfaWQAAAAAAAAGAAAAAQAAAAAAAAAGYW1vdW50AAAAAAALAAAAAAAAAAI=",
-        "AAAABQAAAAAAAAAAAAAADlBvc2l0aW9uQ2xvc2VkAAAAAAABAAAAD3Bvc2l0aW9uX2Nsb3NlZAAAAAACAAAAAAAAAAltYXJrZXRfaWQAAAAAAAAGAAAAAQAAAAAAAAAGYW1vdW50AAAAAAALAAAAAAAAAAI=",
+        "AAAAAAAAARdgYWdlbnRfYnV5YCB3aXRoIGEgcGVyLXNoYXJlIGxpbWl0IHByaWNlIChgbGltaXRfcHJpY2VfYnBzYCwgMCA9IG5vbmUpCmFuZCBhIGRlYWRsaW5lICh1bml4IHNlY29uZHMsIG5ldHdvcmsgdGltZSkuIG1hcmtldC1jb3JlJ3MgYGJ1eV92MmAKZW5mb3JjZXMgYm90aDsgYW4gZXhwaXJlZCBvciBvdXQtb2YtbGltaXQgdHJhZGUgcmV2ZXJ0cyB0aGUgd2hvbGUKaW52b2NhdGlvbiwgc28gdGhlIHRyZWFzdXJ5J3MgY2FwcyBhcmUgbmV2ZXIgY29uc3VtZWQgYnkgYSByZXZlcnRlZAp0cmFkZS4AAAAADGFnZW50X2J1eV92MgAAAAYAAAAAAAAACW1hcmtldF9pZAAAAAAAAAYAAAAAAAAAB291dGNvbWUAAAAH0AAAAAdPdXRjb21lAAAAAAAAAAANY29sbGF0ZXJhbF9pbgAAAAAAAAsAAAAAAAAADm1pbl9zaGFyZXNfb3V0AAAAAAALAAAAAAAAAA9saW1pdF9wcmljZV9icHMAAAAABAAAAAAAAAAIZGVhZGxpbmUAAAAGAAAAAQAAA+kAAAALAAAAAw==",
         "AAAAAAAAAAAAAAANX19jb25zdHJ1Y3RvcgAAAAAAAAcAAAAAAAAABWFkbWluAAAAAAAAEwAAAAAAAAAFYWdlbnQAAAAAAAATAAAAAAAAAApjb2xsYXRlcmFsAAAAAAATAAAAAAAAAAttYXJrZXRfY29yZQAAAAATAAAAAAAAAAltYXhfdHJhZGUAAAAAAAALAAAAAAAAAAptYXhfbWFya2V0AAAAAAALAAAAAAAAAAltYXhfZGFpbHkAAAAAAAALAAAAAA==",
-        "AAAABQAAAAAAAAAAAAAAD1RyYWRlQXV0aG9yaXplZAAAAAABAAAAEHRyYWRlX2F1dGhvcml6ZWQAAAAFAAAAAAAAAAltYXJrZXRfaWQAAAAAAAAGAAAAAQAAAAAAAAAFYWdlbnQAAAAAAAATAAAAAQAAAAAAAAAGYW1vdW50AAAAAAALAAAAAAAAAAAAAAAMbWFya2V0X3RvdGFsAAAACwAAAAAAAAAAAAAAC2RhaWx5X3RvdGFsAAAAAAsAAAAAAAAAAg==",
+        "AAAAAAAAAKJgYWdlbnRfc2VsbGAgd2l0aCBhIHBlci1zaGFyZSBsaW1pdCBwcmljZSAoYGxpbWl0X3ByaWNlX2Jwc2AsIDAgPSBubwpsaW1pdCkgYW5kIGEgZGVhZGxpbmUgKHVuaXggc2Vjb25kcywgbmV0d29yayB0aW1lKSwgYm90aCBlbmZvcmNlZCBieQptYXJrZXQtY29yZSdzIGBzZWxsX3YyYC4AAAAAAA1hZ2VudF9zZWxsX3YyAAAAAAAABgAAAAAAAAAJbWFya2V0X2lkAAAAAAAABgAAAAAAAAAHb3V0Y29tZQAAAAfQAAAAB091dGNvbWUAAAAAAAAAAA5jb2xsYXRlcmFsX291dAAAAAAACwAAAAAAAAANbWF4X3NoYXJlc19pbgAAAAAAAAsAAAAAAAAAD2xpbWl0X3ByaWNlX2JwcwAAAAAEAAAAAAAAAAhkZWFkbGluZQAAAAYAAAABAAAD6QAAAAsAAAAD",
+        "AAAAAAAAALRTZXRzIHRoZSBzdWNjZXNzb3IgdHJlYXN1cnkgdGhhdCBgbWlncmF0ZV9tYXJrZXRgIGhhbmRzIHBvc2l0aW9ucyBhbmQKdGhlIExQIHJvbGUgdG8uIEFkbWluLW9ubHk7IG92ZXJ3cml0ZXMgYW55IHByZXZpb3VzIHN1Y2Nlc3NvciAodGhlCmBTdWNjZXNzb3JTZXRgIGV2ZW50cyBhcmUgdGhlIGF1ZGl0IHRyYWlsKS4AAAANc2V0X3N1Y2Nlc3NvcgAAAAAAAAEAAAAAAAAACXN1Y2Nlc3NvcgAAAAAAABMAAAABAAAD6QAAAAIAAAAD",
+        "AAAAAAAAAqxNb3ZlcyB0aGUgdHJlYXN1cnkncyBwb3NpdGlvbiBpbiBgbWFya2V0X2lkYCDigJQgYW5kIHRoZSBMUCByb2xlLCB3aGVuCnRoZSB0cmVhc3VyeSBpcyB0aGUgbWFya2V0J3MgY3JlYXRvciBhbmQgaGFzIG5vdCBjbGFpbWVkIHRoZSByZW1haW5kZXIKeWV0IOKAlCB0byB0aGUgc3VjY2Vzc29yIHNldCB2aWEgYHNldF9zdWNjZXNzb3JgLCB0aGVuIGNsb3NlcyB0aGUgbG9jYWwKZXhwb3N1cmUuIEFkbWluLW9ubHk6IHJlbG9jYXRpbmcgY2FwaXRhbCBpcyBub3QgYW4gYWdlbnQgdHJhZGluZwphY3Rpb24sIGFuZCB0aGUgYWdlbnQga2V5IG11c3Qgbm90IGJlIGFibGUgdG8gZHJhaW4gcG9zaXRpb25zLgoKbWFya2V0LWNvcmUncyBgdHJhbnNmZXJfcG9zaXRpb25gIC8gYHRyYW5zZmVyX2xwYCByZXF1aXJlIHRoZSB0cmVhc3VyeQppdHNlbGYgdG8gYXV0aG9yaXplLiBCZWNhdXNlIHRoZSB0cmVhc3VyeSBpcyB0aGVpciAqZGlyZWN0KiBjYWxsZXIKaGVyZSwgdGhlIGltcGxpY2l0IGludm9rZXIgYXV0aG9yaXphdGlvbiBjb3ZlcnMgYm90aCDigJQgbm8KYGF1dGhvcml6ZV9hc19jdXJyZW50X2NvbnRyYWN0YCBlbnRyeSBpcyBuZWVkZWQgKHVubGlrZSB0aGUgbmVzdGVkCnRva2VuIHRyYW5zZmVyIGluIGBhZ2VudF9idXlgLCBzZWUgYGRvY3MvYWRyLzAwMDItdHJlYXN1cnktbmVzdGVkLWF1dGgubWRgKS4AAAAObWlncmF0ZV9tYXJrZXQAAAAAAAEAAAAAAAAACW1hcmtldF9pZAAAAAAAAAYAAAABAAAD6QAAAAIAAAAD",
         "AAAAAAAAAAAAAAARYXZhaWxhYmxlX2NhcGl0YWwAAAAAAAAAAAAAAQAAA+kAAAALAAAAAw==",
+        "AAAAAAAAANNDbGFpbXMgdGhlIG1hcmtldCdzIExQIGZlZSBzaGFyZSBmb3IgYSBtYXJrZXQgdGhlIHRyZWFzdXJ5IGNyZWF0ZWQuClRoZSBMUCBwb3J0aW9uIGFjY3J1ZXMgc2VwYXJhdGVseSBvbiBtYXJrZXQtY29yZSAoc2VlIGl0cyBgY2xhaW1fbHBfZmVlc2ApOwp0aGlzIGlzIHRoYXQgY2xhaW0sIGFnZW50LWdhdGVkIGxpa2UgdGhlIG90aGVyIHRyYWRpbmcgZW50cnlwb2ludHMuAAAAABNhZ2VudF9jbGFpbV9scF9mZWVzAAAAAAEAAAAAAAAACW1hcmtldF9pZAAAAAAAAAYAAAABAAAD6QAAAAsAAAAD",
         "AAAAAAAAAGBDcmVhdGVzIGFuZCBzZWVkcyBhIG1hcmtldCB1c2luZyB0cmVhc3VyeSBjYXBpdGFsLiBUaGUgdHJlYXN1cnkKYmVjb21lcyB0aGUgbWFya2V0J3MgY3JlYXRvci9MUC4AAAATYWdlbnRfY3JlYXRlX21hcmtldAAAAAAHAAAAAAAAAA1xdWVzdGlvbl9oYXNoAAAAAAAD7gAAACAAAAAAAAAAD3Jlc29sdXRpb25faGFzaAAAAAPuAAAAIAAAAAAAAAAIbWV0YV91cmkAAAAQAAAAAAAAAAhjYXRlZ29yeQAAB9AAAAAIQ2F0ZWdvcnkAAAAAAAAACmNsb3NlX3RpbWUAAAAAAAYAAAAAAAAAC3NlZWRfYW1vdW50AAAAAAsAAAAAAAAAD2luaXRpYWxfeWVzX2JwcwAAAAAEAAAAAQAAA+kAAAAGAAAAAw==",
-        "AAAAAAAAADpQdWxscyBhY2NydWVkIGZlZXMgZnJvbSBhIGNvbmZpZ3VyZWQgbWFya2V0LWNvcmUgY29udHJhY3QuAAAAAAATY29sbGVjdF9tYXJrZXRfZmVlcwAAAAABAAAAAAAAAAltYXJrZXRfaWQAAAAAAAAGAAAAAQAAA+kAAAALAAAAAw==",
+        "AAAAAAAAASRQdWxscyBhY2NydWVkICoqcHJvdG9jb2wqKiBmZWVzIGZyb20gYSBjb25maWd1cmVkIG1hcmtldC1jb3JlIGNvbnRyYWN0LgoKT25seSB0aGUgcHJvdG9jb2wncyBzaGFyZSBvZiBlYWNoIG1hcmtldCdzIGZlZXM6IHRoZSBMUCBwb3J0aW9uIGFjY3J1ZXMKc2VwYXJhdGVseSBvbiBtYXJrZXQtY29yZSBhbmQgYmVsb25ncyB0byB0aGUgbWFya2V0J3MgY3JlYXRvciDigJQgZm9yCmFnZW50LWNyZWF0ZWQgbWFya2V0cyB0aGF0IGlzIHRoZSB0cmVhc3VyeSBpdHNlbGYsIHZpYQpgYWdlbnRfY2xhaW1fbHBfZmVlc2AuAAAAE2NvbGxlY3RfbWFya2V0X2ZlZXMAAAAAAQAAAAAAAAAJbWFya2V0X2lkAAAAAAAABgAAAAEAAAPpAAAACwAAAAM=",
         "AAAAAAAAAD9DbGFpbXMgdGhlIExQIHBvb2wgcmVtYWluZGVyIGZvciBhIG1hcmtldCB0aGUgdHJlYXN1cnkgY3JlYXRlZC4AAAAAFGNsYWltX3Bvb2xfcmVtYWluZGVyAAAAAQAAAAAAAAAJbWFya2V0X2lkAAAAAAAABgAAAAEAAAPpAAAACwAAAAM=" ]),
       options
     )
@@ -203,7 +268,12 @@ export class Client extends ContractClient {
         set_paused: this.txFromJSON<Result<void>>,
         close_trade: this.txFromJSON<Result<i128>>,
         daily_usage: this.txFromJSON<Result<DailyUsage>>,
+        agent_buy_v2: this.txFromJSON<Result<i128>>,
+        agent_sell_v2: this.txFromJSON<Result<i128>>,
+        set_successor: this.txFromJSON<Result<void>>,
+        migrate_market: this.txFromJSON<Result<void>>,
         available_capital: this.txFromJSON<Result<i128>>,
+        agent_claim_lp_fees: this.txFromJSON<Result<i128>>,
         agent_create_market: this.txFromJSON<Result<u64>>,
         collect_market_fees: this.txFromJSON<Result<i128>>,
         claim_pool_remainder: this.txFromJSON<Result<i128>>

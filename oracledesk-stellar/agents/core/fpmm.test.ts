@@ -2,11 +2,16 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   BPS,
+  buyWithinLimit,
   calcBuy,
   calcSell,
   collateralOutForShares,
+  priceAfter,
+  priceAfterBuy,
+  priceAfterSell,
   priceYesBps,
   seedReserves,
+  sellWithinLimit,
   settleValue,
 } from "./fpmm.js";
 
@@ -107,4 +112,39 @@ test("collateralOutForShares round-trips through calcSell within one unit of rou
 
 test("BPS matches the contract's basis-point scale", () => {
   assert.equal(BPS, 10_000n);
+});
+
+test("priceAfter maps both outcomes to the same YES price", () => {
+  assert.equal(priceAfter(true, 1000n, 1000n), 5000n);
+  assert.equal(priceAfter(false, 1000n, 1000n), 5000n);
+  assert.equal(priceAfter(true, 910n, 1100n), priceYesBps(910n, 1100n));
+  assert.equal(priceAfter(false, 910n, 1100n), priceYesBps(1100n, 910n));
+});
+
+test("priceAfterBuy matches the reference example shared with math.rs and the Python model", () => {
+  // Buying 10 USDC of YES in a 100-sets pool at 50% with a 1% fee moves
+  // YES from 5000 to 5470 bps.
+  const q = calcBuy(1_000_000_000n, 1_000_000_000n, 100_000_000n, 100n);
+  assert.equal(priceYesBps(1_000_000_000n, 1_000_000_000n), 5000n);
+  assert.equal(priceAfterBuy(true, q), 5470n);
+  // Selling right back must land below the pre-trade price (two fees).
+  const s = calcSell(q.newReserveBought, q.newReserveOther, 100_000_000n, 100n);
+  assert.ok(priceAfterSell(true, s) < 5000n);
+});
+
+test("buyWithinLimit and sellWithinLimit mirror the on-chain boundaries", () => {
+  // Exact equality passes, one unit over fails, in both directions.
+  assert.equal(buyWithinLimit(100n, 100n, 10_000n), true);
+  assert.equal(buyWithinLimit(100n, 101n, 10_000n), true);
+  assert.equal(buyWithinLimit(101n, 100n, 10_000n), false);
+  assert.equal(buyWithinLimit(100n, 200n, 5_000n), true);
+  assert.equal(buyWithinLimit(101n, 200n, 5_000n), false);
+  assert.equal(sellWithinLimit(100n, 100n, 10_000n), true);
+  assert.equal(sellWithinLimit(99n, 100n, 10_000n), false);
+  assert.equal(sellWithinLimit(100n, 200n, 5_000n), true);
+  assert.equal(sellWithinLimit(100n, 201n, 5_000n), false);
+  // A zero limit is trivially satisfied for sells and binds a buy only at
+  // a zero average price.
+  assert.equal(sellWithinLimit(0n, 1n, 0n), true);
+  assert.equal(buyWithinLimit(1n, 1n, 0n), false);
 });

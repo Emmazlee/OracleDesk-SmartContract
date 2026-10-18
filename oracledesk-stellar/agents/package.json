@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc --noEmit",
-    "test": "tsx --test core/*.test.ts stellar/*.test.ts",
+    "test": "tsx --test core/*.test.ts stellar/*.test.ts bin/*.test.ts",
     "market-maker": "tsx bin/market-maker.ts",
     "trader": "tsx bin/trader.ts"
   },

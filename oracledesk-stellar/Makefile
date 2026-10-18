@@ -26,6 +26,7 @@ build:
 
 test: build
 	cargo test --workspace
+	cargo test --manifest-path scripts/spec-hash/Cargo.toml
 	python3 model/fpmm_model.py
 	cd x402 && npm test
 	cd agents && npm test

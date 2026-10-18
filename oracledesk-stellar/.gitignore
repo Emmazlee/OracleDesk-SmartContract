@@ -28,6 +28,10 @@ yarn-error.log*
 .soroban/
 .stellar/
 
+# V2 resolution specs written by scripts/seed-market.sh. The salt inside each
+# file is a secret until its market's spec is revealed, so never commit them.
+deployments/specs/
+
 # Agent dry-run/local trace output (agents/core/trace.ts's LocalTraceStore)
 .traces/
 

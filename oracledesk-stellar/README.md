@@ -87,6 +87,29 @@ transactions using two throwaway identities (`oracledesk-deployer`,
 `oracledesk-agent`) that `scripts/deploy-testnet.sh` generates and funds via
 `stellar keys generate --fund`. Nothing here ever touches mainnet.
 
+## Treasury migration
+
+The treasury has no upgrade path or config setters — fixing a bug, changing
+caps, or rotating the agent means deploying a **new** treasury. Deploying
+one strands nothing: the old treasury's positions and LP ownership can be
+handed to a successor market by market:
+
+```bash
+make build                        # treasury wasm must be current
+scripts/migrate-treasury.sh      # deploys a successor + migrates every market
+```
+
+The script reads `deployments/testnet.json` and the old treasury's live
+config, deploys a new treasury with the same agent/collateral/caps, records
+it as the old treasury's successor (`set_successor`, admin), then calls
+`migrate_market(i)` for every `i` in `0..market_count`. Both steps are
+admin-gated — the agent cannot invoke them — and the destination is fixed
+to the recorded successor, so migration cannot send value anywhere else.
+Re-running is safe. It deliberately does **not** rewire market-core
+(`set_treasury`); that cutover changes the fee recipient for future markets
+and stays a separate operator step (the script prints the exact command).
+See `docs/architecture.md` for the full auth model.
+
 ## Repository layout
 
 ```
@@ -96,8 +119,9 @@ x402/                 the paid trace API (Express + @x402/*)
 agents/               core/ (chain-agnostic strategy + trace building),
                       stellar/ (signing/submission adapter), bin/ (CLIs)
 packages/bindings/    generated TypeScript contract clients
-scripts/              deploy-testnet.sh, seed-market.sh, demo.sh,
-                      gen-bindings.sh, spec-hash/ (a small dev-tool crate)
+scripts/              deploy-testnet.sh, migrate-treasury.sh,
+                      seed-market.sh, demo.sh, gen-bindings.sh,
+                      spec-hash/ (a small dev-tool crate)
 deployments/          testnet.json — the current live testnet addresses
 docs/                 architecture, ADRs, frontend-integration, STATUS
 ```

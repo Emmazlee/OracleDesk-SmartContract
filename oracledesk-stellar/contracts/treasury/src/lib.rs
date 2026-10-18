@@ -52,6 +52,7 @@ pub enum DataKey {
     Market(u64),
     Daily,
     Paused,
+    Successor,
 }
 
 #[contracterror]
@@ -68,6 +69,7 @@ pub enum Error {
     MarketNotOpen = 8,
     InsufficientBalance = 9,
     Paused = 10,
+    NoSuccessor = 11,
 }
 
 #[contractevent]
@@ -96,6 +98,25 @@ pub struct FeesCollected {
     #[topic]
     pub market_id: u64,
     pub amount: i128,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SuccessorSet {
+    pub old: Option<Address>,
+    pub new: Address,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MarketMigrated {
+    #[topic]
+    pub market_id: u64,
+    #[topic]
+    pub successor: Address,
+    pub yes: i128,
+    pub no: i128,
+    pub lp: bool,
 }
 
 #[contract]
@@ -244,6 +265,41 @@ impl Treasury {
         collateral_in: i128,
         min_shares_out: i128,
     ) -> Result<i128, Error> {
+        Self::do_agent_buy(env, market_id, outcome, collateral_in, min_shares_out, None)
+    }
+
+    /// `agent_buy` with a per-share limit price (`limit_price_bps`, 0 = none)
+    /// and a deadline (unix seconds, network time). market-core's `buy_v2`
+    /// enforces both; an expired or out-of-limit trade reverts the whole
+    /// invocation, so the treasury's caps are never consumed by a reverted
+    /// trade.
+    pub fn agent_buy_v2(
+        env: Env,
+        market_id: u64,
+        outcome: Outcome,
+        collateral_in: i128,
+        min_shares_out: i128,
+        limit_price_bps: u32,
+        deadline: u64,
+    ) -> Result<i128, Error> {
+        Self::do_agent_buy(
+            env,
+            market_id,
+            outcome,
+            collateral_in,
+            min_shares_out,
+            Some((limit_price_bps, deadline)),
+        )
+    }
+
+    fn do_agent_buy(
+        env: Env,
+        market_id: u64,
+        outcome: Outcome,
+        collateral_in: i128,
+        min_shares_out: i128,
+        bound: Option<(u32, u64)>,
+    ) -> Result<i128, Error> {
         Self::assert_not_paused(&env)?;
         let config = Self::get_config(env.clone())?;
         config.agent.require_auth();
@@ -266,13 +322,25 @@ impl Treasury {
         // `pitfall_agent_buy_fails_without_nested_transfer_preauth` below and
         // `docs/adr/0002-treasury-nested-auth.md`.
         Self::authorize_token_pull(&env, &config, &treasury_addr, collateral_in);
-        let shares = MarketCoreClient::new(&env, &config.market_core).buy(
-            &treasury_addr,
-            &market_id,
-            &outcome,
-            &collateral_in,
-            &min_shares_out,
-        );
+        let client = MarketCoreClient::new(&env, &config.market_core);
+        let shares = match bound {
+            Some((limit_price_bps, deadline)) => client.buy_v2(
+                &treasury_addr,
+                &market_id,
+                &outcome,
+                &collateral_in,
+                &min_shares_out,
+                &limit_price_bps,
+                &deadline,
+            ),
+            None => client.buy(
+                &treasury_addr,
+                &market_id,
+                &outcome,
+                &collateral_in,
+                &min_shares_out,
+            ),
+        };
         Self::reserve_capacity(&env, &config, market_id, collateral_in)?;
         Ok(shares)
     }
@@ -288,17 +356,62 @@ impl Treasury {
         collateral_out: i128,
         max_shares_in: i128,
     ) -> Result<i128, Error> {
+        Self::do_agent_sell(env, market_id, outcome, collateral_out, max_shares_in, None)
+    }
+
+    /// `agent_sell` with a per-share limit price (`limit_price_bps`, 0 = no
+    /// limit) and a deadline (unix seconds, network time), both enforced by
+    /// market-core's `sell_v2`.
+    pub fn agent_sell_v2(
+        env: Env,
+        market_id: u64,
+        outcome: Outcome,
+        collateral_out: i128,
+        max_shares_in: i128,
+        limit_price_bps: u32,
+        deadline: u64,
+    ) -> Result<i128, Error> {
+        Self::do_agent_sell(
+            env,
+            market_id,
+            outcome,
+            collateral_out,
+            max_shares_in,
+            Some((limit_price_bps, deadline)),
+        )
+    }
+
+    fn do_agent_sell(
+        env: Env,
+        market_id: u64,
+        outcome: Outcome,
+        collateral_out: i128,
+        max_shares_in: i128,
+        bound: Option<(u32, u64)>,
+    ) -> Result<i128, Error> {
         Self::assert_not_paused(&env)?;
         let config = Self::get_config(env.clone())?;
         config.agent.require_auth();
         let treasury_addr = env.current_contract_address();
-        Ok(MarketCoreClient::new(&env, &config.market_core).sell(
-            &treasury_addr,
-            &market_id,
-            &outcome,
-            &collateral_out,
-            &max_shares_in,
-        ))
+        let client = MarketCoreClient::new(&env, &config.market_core);
+        Ok(match bound {
+            Some((limit_price_bps, deadline)) => client.sell_v2(
+                &treasury_addr,
+                &market_id,
+                &outcome,
+                &collateral_out,
+                &max_shares_in,
+                &limit_price_bps,
+                &deadline,
+            ),
+            None => client.sell(
+                &treasury_addr,
+                &market_id,
+                &outcome,
+                &collateral_out,
+                &max_shares_in,
+            ),
+        })
     }
 
     /// Marks a market's exposure as exited. Pure bookkeeping (see
@@ -333,13 +446,106 @@ impl Treasury {
         Ok(MarketCoreClient::new(&env, &config.market_core).claim_pool_remainder(&market_id))
     }
 
-    /// Pulls accrued fees from a configured market-core contract.
+    /// Claims the market's LP fee share for a market the treasury created.
+    /// The LP portion accrues separately on market-core (see its `claim_lp_fees`);
+    /// this is that claim, agent-gated like the other trading entrypoints.
+    pub fn agent_claim_lp_fees(env: Env, market_id: u64) -> Result<i128, Error> {
+        let config = Self::get_config(env.clone())?;
+        config.agent.require_auth();
+        Ok(MarketCoreClient::new(&env, &config.market_core).claim_lp_fees(&market_id))
+    }
+
+    /// Pulls accrued **protocol** fees from a configured market-core contract.
+    ///
+    /// Only the protocol's share of each market's fees: the LP portion accrues
+    /// separately on market-core and belongs to the market's creator — for
+    /// agent-created markets that is the treasury itself, via
+    /// `agent_claim_lp_fees`.
     pub fn collect_market_fees(env: Env, market_id: u64) -> Result<i128, Error> {
         Self::require_admin(&env)?;
         let config = Self::get_config(env.clone())?;
         let amount = MarketCoreClient::new(&env, &config.market_core).sweep_fees(&market_id);
         FeesCollected { market_id, amount }.publish(&env);
         Ok(amount)
+    }
+
+    // ----- migration ---------------------------------------------------------
+
+    /// Sets the successor treasury that `migrate_market` hands positions and
+    /// the LP role to. Admin-only; overwrites any previous successor (the
+    /// `SuccessorSet` events are the audit trail).
+    pub fn set_successor(env: Env, successor: Address) -> Result<(), Error> {
+        Self::require_admin(&env)?;
+        let old: Option<Address> = env.storage().instance().get(&DataKey::Successor);
+        env.storage()
+            .instance()
+            .set(&DataKey::Successor, &successor);
+        SuccessorSet {
+            old,
+            new: successor,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Moves the treasury's position in `market_id` — and the LP role, when
+    /// the treasury is the market's creator and has not claimed the remainder
+    /// yet — to the successor set via `set_successor`, then closes the local
+    /// exposure. Admin-only: relocating capital is not an agent trading
+    /// action, and the agent key must not be able to drain positions.
+    ///
+    /// market-core's `transfer_position` / `transfer_lp` require the treasury
+    /// itself to authorize. Because the treasury is their *direct* caller
+    /// here, the implicit invoker authorization covers both — no
+    /// `authorize_as_current_contract` entry is needed (unlike the nested
+    /// token transfer in `agent_buy`, see `docs/adr/0002-treasury-nested-auth.md`).
+    pub fn migrate_market(env: Env, market_id: u64) -> Result<(), Error> {
+        Self::require_admin(&env)?;
+        let successor: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Successor)
+            .ok_or(Error::NoSuccessor)?;
+        let config = Self::get_config(env.clone())?;
+        let treasury_addr = env.current_contract_address();
+        let client = MarketCoreClient::new(&env, &config.market_core);
+
+        let position = client.get_position(&market_id, &treasury_addr);
+        if position.yes > 0 {
+            client.transfer_position(
+                &treasury_addr,
+                &successor,
+                &market_id,
+                &Outcome::Yes,
+                &position.yes,
+            );
+        }
+        if position.no > 0 {
+            client.transfer_position(
+                &treasury_addr,
+                &successor,
+                &market_id,
+                &Outcome::No,
+                &position.no,
+            );
+        }
+        let market = client.get_market(&market_id);
+        let lp = market.creator == treasury_addr && !market.lp_claimed;
+        if lp {
+            client.transfer_lp(&market_id, &successor);
+        }
+        let mut exposure = Self::market_exposure(&env, market_id);
+        exposure.open = false;
+        Self::save_market(&env, market_id, &exposure);
+        MarketMigrated {
+            market_id,
+            successor,
+            yes: position.yes,
+            no: position.no,
+            lp,
+        }
+        .publish(&env);
+        Ok(())
     }
 }
 
@@ -480,6 +686,7 @@ mod test {
 
     struct Fixture {
         env: Env,
+        admin: Address,
         treasury: TreasuryClient<'static>,
         treasury_id: Address,
         token: Address,
@@ -518,6 +725,9 @@ mod test {
                 treasury_id.clone(),
                 Address::generate(&env),
                 100u32,
+                // Protocol keeps the whole fee; treasury tests only exercise
+                // protocol-side sweeps.
+                10_000u32,
             ),
         );
         let market_core = MarketCoreClient::new(&env, &market_core_id);
@@ -546,6 +756,7 @@ mod test {
         );
         Fixture {
             env: env.clone(),
+            admin,
             treasury: TreasuryClient::new(&env, &treasury),
             treasury_id,
             token: collateral.address(),
@@ -802,5 +1013,351 @@ mod test {
             }])
             .agent_buy(&market_id, &outcome, &amount, &min_out);
         assert!(shares > 0);
+    }
+
+    #[test]
+    fn agent_claims_lp_fees_for_own_market() {
+        let f = fixture_with_caps(
+            150 * 10_000_000_i128,
+            300 * 10_000_000_i128,
+            300 * 10_000_000_i128,
+        );
+        // New markets snapshot the split at creation; give the creator half.
+        f.market_core.set_protocol_fee_share_bps(&5000u32);
+        let market_id = f.treasury.agent_create_market(
+            &BytesN::from_array(&f.env, &[15u8; 32]),
+            &BytesN::from_array(&f.env, &[115u8; 32]),
+            &String::from_str(&f.env, "ipfs://lp-fees"),
+            &Category::Macro,
+            &MARKET_CLOSE,
+            &(100 * 10_000_000_i128),
+            &5000u32,
+        );
+        let trader = Address::generate(&f.env);
+        StellarAssetClient::new(&f.env, &f.token).mint(&trader, &(100 * 10_000_000_i128));
+        f.market_core.buy(
+            &trader,
+            &market_id,
+            &Outcome::Yes,
+            &(10 * 10_000_000_i128),
+            &0_i128,
+        );
+
+        // Fee is 1_000_000, split 50/50 between protocol and the LP.
+        let token = soroban_sdk::token::TokenClient::new(&f.env, &f.token);
+        let before = token.balance(&f.treasury_id);
+        assert_eq!(f.treasury.agent_claim_lp_fees(&market_id), 500_000);
+        assert_eq!(token.balance(&f.treasury_id), before + 500_000);
+        assert_eq!(f.treasury.agent_claim_lp_fees(&market_id), 0);
+    }
+
+    #[test]
+    fn agent_buy_breaker_revert_leaves_caps_unchanged() {
+        let f = fixture();
+        f.market_core
+            .set_default_breaker(&market_core::BreakerConfig {
+                max_impact_bps: 10,
+                band_bps: 0,
+            });
+        let creator = f.market_core.get_market(&f.market_id).creator;
+        let market_id = f.market_core.create_market(
+            &creator,
+            &BytesN::from_array(&f.env, &[16u8; 32]),
+            &BytesN::from_array(&f.env, &[116u8; 32]),
+            &String::from_str(&f.env, "ipfs://breaker-market"),
+            &Category::Crypto,
+            &MARKET_CLOSE,
+            &(100 * 10_000_000_i128),
+            &5000u32,
+        );
+
+        // 0.1 USDC moves the price ~4 bps: inside the 10 bps impact cap.
+        f.treasury
+            .agent_buy(&market_id, &Outcome::Yes, &(1_000_000_i128), &0);
+        assert_eq!(f.treasury.daily_usage().amount, 1_000_000);
+
+        // 20 USDC moves it ~893 bps: market-core trips the breaker, which
+        // reverts the whole treasury call — the caps must not absorb it.
+        assert!(f
+            .treasury
+            .try_agent_buy(&market_id, &Outcome::Yes, &(20 * 10_000_000_i128), &0)
+            .is_err());
+        assert_eq!(f.treasury.daily_usage().amount, 1_000_000);
+        let exposure = f.env.as_contract(&f.treasury_id, || {
+            f.env
+                .storage()
+                .persistent()
+                .get::<DataKey, MarketExposure>(&DataKey::Market(market_id))
+                .unwrap()
+        });
+        assert!(exposure.open);
+        assert_eq!(exposure.amount, 1_000_000);
+    }
+
+    #[test]
+    fn agent_buy_v2_forwards_bounds() {
+        let f = fixture();
+        let now = f.env.ledger().timestamp();
+        // Expired deadline.
+        assert!(f
+            .treasury
+            .try_agent_buy_v2(
+                &f.market_id,
+                &Outcome::Yes,
+                &(10_000_000_i128),
+                &0,
+                &0u32,
+                &(now - 1),
+            )
+            .is_err());
+        // Average fill for 20 USDC is ~5505 bps; limit 5000 must reject.
+        assert!(f
+            .treasury
+            .try_agent_buy_v2(
+                &f.market_id,
+                &Outcome::Yes,
+                &(20 * 10_000_000_i128),
+                &0,
+                &5000u32,
+                &(now + 60),
+            )
+            .is_err());
+        assert_eq!(f.treasury.daily_usage().amount, 0);
+
+        // Generous bounds: succeeds and consumes the caps like agent_buy.
+        let shares = f.treasury.agent_buy_v2(
+            &f.market_id,
+            &Outcome::Yes,
+            &(20 * 10_000_000_i128),
+            &0,
+            &6000u32,
+            &(now + 60),
+        );
+        assert!(shares > 0);
+        assert_eq!(f.treasury.daily_usage().amount, 20 * 10_000_000_i128);
+
+        // The sell side forwards its bounds too.
+        let quote = f
+            .market_core
+            .quote_sell(&f.market_id, &Outcome::Yes, &(5 * 10_000_000_i128));
+        let sold = f.treasury.agent_sell_v2(
+            &f.market_id,
+            &Outcome::Yes,
+            &(5 * 10_000_000_i128),
+            &quote,
+            &0u32,
+            &(now + 60),
+        );
+        assert!(sold > 0);
+        assert!(f
+            .treasury
+            .try_agent_sell_v2(
+                &f.market_id,
+                &Outcome::Yes,
+                &(5 * 10_000_000_i128),
+                &quote,
+                &0u32,
+                &(now - 1),
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn agent_buy_v2_deadline_revert_leaves_caps_unchanged() {
+        let f = fixture();
+        let past = f.env.ledger().timestamp() - 1;
+        assert!(f
+            .treasury
+            .try_agent_buy_v2(
+                &f.market_id,
+                &Outcome::Yes,
+                &(10 * 10_000_000_i128),
+                &0,
+                &0u32,
+                &past,
+            )
+            .is_err());
+        assert_eq!(f.treasury.daily_usage().amount, 0);
+        let exposure = f.env.as_contract(&f.treasury_id, || {
+            f.env
+                .storage()
+                .persistent()
+                .get::<DataKey, MarketExposure>(&DataKey::Market(f.market_id))
+        });
+        assert_eq!(exposure, None);
+    }
+
+    /// The v2 twin of the pitfall test above: the `buy_v2` path must also
+    /// pre-authorize the nested token transfer (`mock_auths` for only the
+    /// agent, so a regression in `authorize_token_pull` fails here).
+    #[test]
+    fn pitfall_agent_buy_v2_forwards_nested_transfer_auth() {
+        let f = fixture();
+        let agent = f.treasury.get_config().agent;
+        let market_id = f.market_id;
+        let outcome = Outcome::Yes;
+        let amount = 20 * 10_000_000_i128;
+        let min_out = 0_i128;
+        let limit = 0u32;
+        let deadline = f.env.ledger().timestamp() + 60;
+
+        f.env.set_auths(&[]);
+        let shares = f
+            .treasury
+            .mock_auths(&[MockAuth {
+                address: &agent,
+                invoke: &MockAuthInvoke {
+                    contract: &f.treasury_id,
+                    fn_name: "agent_buy_v2",
+                    args: (market_id, outcome.clone(), amount, min_out, limit, deadline)
+                        .into_val(&f.env),
+                    sub_invokes: &[],
+                },
+            }])
+            .agent_buy_v2(&market_id, &outcome, &amount, &min_out, &limit, &deadline);
+        assert!(shares > 0);
+    }
+
+    #[test]
+    fn migrate_market_moves_position_and_lp_to_successor() {
+        let f = fixture_with_caps(
+            150 * 10_000_000_i128,
+            300 * 10_000_000_i128,
+            300 * 10_000_000_i128,
+        );
+        let market_id = f.treasury.agent_create_market(
+            &BytesN::from_array(&f.env, &[17u8; 32]),
+            &BytesN::from_array(&f.env, &[117u8; 32]),
+            &String::from_str(&f.env, "ipfs://migration"),
+            &Category::Macro,
+            &MARKET_CLOSE,
+            &(100 * 10_000_000_i128),
+            &5000u32,
+        );
+        f.treasury
+            .agent_buy(&market_id, &Outcome::Yes, &(20 * 10_000_000_i128), &0);
+        let held = f.market_core.get_position(&market_id, &f.treasury_id).yes;
+        assert!(held > 0);
+        assert_eq!(f.market_core.get_market(&market_id).creator, f.treasury_id);
+
+        let successor = Address::generate(&f.env);
+        f.treasury.set_successor(&successor);
+        f.treasury.migrate_market(&market_id);
+
+        assert_eq!(
+            f.market_core.get_position(&market_id, &f.treasury_id).yes,
+            0
+        );
+        assert_eq!(f.market_core.get_position(&market_id, &successor).yes, held);
+        assert_eq!(f.market_core.get_market(&market_id).creator, successor);
+        let exposure = f.env.as_contract(&f.treasury_id, || {
+            f.env
+                .storage()
+                .persistent()
+                .get::<DataKey, MarketExposure>(&DataKey::Market(market_id))
+                .unwrap()
+        });
+        assert!(!exposure.open);
+        // Migration does not free the cumulative cap (like close_trade).
+        assert_eq!(exposure.amount, 120 * 10_000_000_i128);
+    }
+
+    #[test]
+    fn migrate_requires_successor() {
+        let f = fixture();
+        assert_eq!(
+            f.treasury.try_migrate_market(&f.market_id),
+            Err(Ok(Error::NoSuccessor))
+        );
+    }
+
+    #[test]
+    fn agent_cannot_migrate() {
+        let f = fixture();
+        let agent = f.treasury.get_config().agent;
+        f.env.set_auths(&[]);
+        assert!(f
+            .treasury
+            .mock_auths(&[MockAuth {
+                address: &agent,
+                invoke: &MockAuthInvoke {
+                    contract: &f.treasury_id,
+                    fn_name: "migrate_market",
+                    args: (f.market_id,).into_val(&f.env),
+                    sub_invokes: &[],
+                },
+            }])
+            .try_migrate_market(&f.market_id)
+            .is_err());
+    }
+
+    /// The treasury's calls to market-core's `transfer_position` /
+    /// `transfer_lp` are *direct* calls, so market-core's `require_auth`
+    /// on the treasury is satisfied implicitly by the invoker rule — no
+    /// `authorize_as_current_contract` entry is needed (unlike the nested
+    /// token transfer in `agent_buy`). Mocking only the admin's auth must be
+    /// enough for the whole migration.
+    #[test]
+    fn pitfall_migrate_market_needs_only_admin_auth() {
+        let f = fixture_with_caps(
+            150 * 10_000_000_i128,
+            300 * 10_000_000_i128,
+            300 * 10_000_000_i128,
+        );
+        let market_id = f.treasury.agent_create_market(
+            &BytesN::from_array(&f.env, &[18u8; 32]),
+            &BytesN::from_array(&f.env, &[118u8; 32]),
+            &String::from_str(&f.env, "ipfs://migration-auth"),
+            &Category::Macro,
+            &MARKET_CLOSE,
+            &(100 * 10_000_000_i128),
+            &5000u32,
+        );
+        f.treasury
+            .agent_buy(&market_id, &Outcome::Yes, &(20 * 10_000_000_i128), &0);
+        let successor = Address::generate(&f.env);
+        f.treasury.set_successor(&successor);
+        let held = f.market_core.get_position(&market_id, &f.treasury_id).yes;
+
+        f.env.set_auths(&[]);
+        f.treasury
+            .mock_auths(&[MockAuth {
+                address: &f.admin,
+                invoke: &MockAuthInvoke {
+                    contract: &f.treasury_id,
+                    fn_name: "migrate_market",
+                    args: (market_id,).into_val(&f.env),
+                    sub_invokes: &[],
+                },
+            }])
+            .migrate_market(&market_id);
+
+        assert_eq!(f.market_core.get_position(&market_id, &successor).yes, held);
+        assert_eq!(f.market_core.get_market(&market_id).creator, successor);
+    }
+
+    #[test]
+    fn migrate_then_successor_redeems_after_resolution() {
+        let f = fixture();
+        f.treasury
+            .agent_buy(&f.market_id, &Outcome::Yes, &(20 * 10_000_000_i128), &0);
+        let successor = Address::generate(&f.env);
+        f.treasury.set_successor(&successor);
+
+        f.env.ledger().set_timestamp(MARKET_CLOSE + 1);
+        f.market_core.resolve(&f.market_id, &Outcome::Yes);
+        f.treasury.migrate_market(&f.market_id);
+
+        // The successor (not the treasury) now redeems the migrated shares.
+        let payout = f.market_core.redeem(&successor, &f.market_id);
+        assert!(payout > 0);
+        assert_eq!(
+            soroban_sdk::token::TokenClient::new(&f.env, &f.token).balance(&successor),
+            payout
+        );
+        assert_eq!(
+            f.market_core.get_position(&f.market_id, &f.treasury_id).yes,
+            0
+        );
     }
 }

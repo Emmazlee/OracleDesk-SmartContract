@@ -10,6 +10,8 @@
  * implementation of the roles described in the design doc, not a port.
  */
 
+import { calcBuy, priceAfterBuy, priceYesBps } from "./fpmm.js";
+
 export interface MarketSignal {
   /** Free-text description of what was observed (a news event, an oracle
    * feed update, a Polymarket price move, etc). */
@@ -84,6 +86,13 @@ export interface MarketState {
   question: string;
   yesBps: number; // current market-implied probability
   closeTime: number;
+  /** Pool reserves in stroops, if known. Required when the caller sets
+   * `maxImpactBps` on `decideTrade`. */
+  reserveYesStroops?: bigint;
+  reserveNoStroops?: bigint;
+  /** The market's snapshotted trading fee, if known. Required when the
+   * caller sets `maxImpactBps` on `decideTrade`. */
+  feeBps?: number;
 }
 
 export interface TraderDecision {
@@ -94,14 +103,66 @@ export interface TraderDecision {
 }
 
 /**
+ * Largest `size <= maxSize` whose estimated price impact stays at or below
+ * `maxImpactBps`, found by binary search over `calcBuy` (impact is
+ * monotone in size for buys). Sizes whose fee consumes the whole amount
+ * are treated as infeasible. Returns 0n when even the smallest executable
+ * size would move the price too far.
+ */
+function clampSizeToImpact(
+  market: MarketState,
+  outcome: "Yes" | "No",
+  maxSize: bigint,
+  maxImpactBps: number,
+): bigint {
+  const { reserveYesStroops: rYes, reserveNoStroops: rNo, feeBps } = market;
+  if (rYes === undefined || rNo === undefined || feeBps === undefined) {
+    throw new Error(
+      "decideTrade: maxImpactBps requires reserveYesStroops, reserveNoStroops and feeBps on the market state",
+    );
+  }
+  const takenIsYes = outcome === "Yes";
+  const rBought = takenIsYes ? rYes : rNo;
+  const rOther = takenIsYes ? rNo : rYes;
+  const pre = priceYesBps(rYes, rNo);
+  const cap = BigInt(maxImpactBps);
+  const impact = (size: bigint): bigint | null => {
+    if (size <= 0n) return 0n;
+    let post: bigint;
+    try {
+      post = priceAfterBuy(takenIsYes, calcBuy(rBought, rOther, size, BigInt(feeBps)));
+    } catch {
+      return null; // fee consumes the whole amount — not executable at all
+    }
+    return post > pre ? post - pre : pre - post;
+  };
+  let lo = 0n;
+  let hi = maxSize;
+  while (lo < hi) {
+    const mid = (lo + hi + 1n) / 2n;
+    const m = impact(mid);
+    if (m !== null && m <= cap) lo = mid;
+    else hi = mid - 1n;
+  }
+  return lo;
+}
+
+/**
  * Compares a market's implied probability to a fair-value estimate and
  * decides whether the mispricing is worth trading. Trades toward whichever
  * side the market is *underpricing* relative to the estimate.
+ *
+ * With `maxImpactBps` set to a positive value, the trade size is clamped
+ * so the estimated price impact stays below the market's on-chain breaker
+ * (the market state must then carry reserves and `feeBps`); if even the
+ * smallest size would trip it, the decision is a skip instead of a
+ * guaranteed revert. `0` or omitted disables the clamp, matching the
+ * on-chain breaker's "0 = disabled" semantics.
  */
 export function decideTrade(
   market: MarketState,
   fairValueBps: number,
-  opts: { minEdgeBps: number; tradeSizeStroops: bigint },
+  opts: { minEdgeBps: number; tradeSizeStroops: bigint; maxImpactBps?: number },
 ): TraderDecision {
   const edge = fairValueBps - market.yesBps; // positive => YES underpriced
   if (Math.abs(edge) < opts.minEdgeBps) {
@@ -111,10 +172,24 @@ export function decideTrade(
     };
   }
   const outcome = edge > 0 ? "Yes" : "No";
+  let collateralInStroops = opts.tradeSizeStroops;
+  let clampNote = "";
+  if (opts.maxImpactBps !== undefined && opts.maxImpactBps > 0) {
+    collateralInStroops = clampSizeToImpact(market, outcome, opts.tradeSizeStroops, opts.maxImpactBps);
+    if (collateralInStroops <= 0n) {
+      return {
+        action: "skip",
+        reasoning: `every size up to ${opts.tradeSizeStroops} stroops would move market ${market.marketId}'s price by more than ${opts.maxImpactBps}bps — the on-chain breaker would reject the trade`,
+      };
+    }
+    if (collateralInStroops < opts.tradeSizeStroops) {
+      clampNote = `; size clamped from ${opts.tradeSizeStroops} to ${collateralInStroops} stroops to stay under the ${opts.maxImpactBps}bps impact breaker`;
+    }
+  }
   return {
     action: "buy",
-    reasoning: `market ${market.marketId} prices YES at ${market.yesBps}bps vs fair value ${fairValueBps}bps (edge ${edge}bps) — buying ${outcome}`,
+    reasoning: `market ${market.marketId} prices YES at ${market.yesBps}bps vs fair value ${fairValueBps}bps (edge ${edge}bps) — buying ${outcome}${clampNote}`,
     outcome,
-    collateralInStroops: opts.tradeSizeStroops,
+    collateralInStroops,
   };
 }

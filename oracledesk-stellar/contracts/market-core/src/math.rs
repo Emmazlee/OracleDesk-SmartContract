@@ -1,1 +1,443 @@
-Ly8hIFB1cmUgaW50ZWdlciBtYXRoIGZvciBhIGJpbmFyeSBmaXhlZC1wcm9kdWN0IG1hcmtldCBtYWtlciAoRlBNTSkuCi8vIQovLyBObyBTb3JvYmFuIHR5cGVzIGluIGhlcmUsIHNvIGBjYXJnbyB0ZXN0YCBleGVyY2lzZXMgaXQgbmF0aXZlbHkgYW5kCi8vIGBtb2RlbC9mcG1tX21vZGVsLnB5YCBtaXJyb3JzIGl0IGxpbmUgYnkgbGluZSBmb3IgcHJvcGVydHkgdGVzdGluZy4KLy8KLy8gQ29udmVudGlvbnMKLy8gLSBBbGwgYW1vdW50cyBhcmUgbm9uLW5lZ2F0aXZlIGBpMTI4YCBpbiBjb2xsYXRlcmFsIGJhc2UgdW5pdHMKLy8gICAoVVNEQyBvbiBTdGVsbGFyID0gNyBkZWNpbWFscywgc28gMSBVU0RDID0gMTBfMDAwXzAwMCkuCi8vIC0gUm91bmRpbmcgYWx3YXlzIGZhdm91cnMgdGhlIHBvb2w6IGZlZXMgcm91bmQgdXAsIHNoYXJlcyBvdXQgcm91bmQgZG93biwKLy8gICBzaGFyZXMgaW4gcm91bmQgdXAuIFRoaXMgaXMgd2hhdCBrZWVwcyB0aGUgcG9vbCBpbnZhcmlhbnQgYGsgPSByX3llcyAqIHJfbm9gCi8vICAgbm9uLWRlY3JlYXNpbmcgYW5kIGJsb2NrcyBkdXN0LXNwbGl0dGluZyBhdHRhY2tzLgovLyAtIGBNQVhfU0VUU2AgYm91bmRzIG1hcmtldCBzaXplIHNvIHRoYXQgYW55IHByb2R1Y3Qgb2YgdHdvIHF1YW50aXRpZXMKLy8gICAoYm90aCA8PSAxZTE1KSBpcyA8PSAxZTMwLCBmYXIgYmVsb3cgYGlpMjg6Ok1BWGAgKH4xLjdlMzgpLiBFdmVyeQovLyAgIG11bHRpcGxpY2F0aW9uIGlzIHN0aWxsIGBjaGVja2VkX2AqIGFzIGEgc2Vjb25kIGxpbmUgb2YgZGVmZW5jZS4KCnB1YiBjb25zdCBCUFM6IGkxMjggPSAxMF8wMDA7CnB1YiBjb25zdCBNQVhfU0VUUzogaTEyOCA9IDFfMDAwXzAwMF8wMDBfMDAwXzAwMDsgLy8gMWUxNSA9IDEwME0gVVNEQyAoNyBkcCkKcHViIGNvbnN0IE1JTl9QUk9CX0JQUzogdTMyID0gMTAwOyAvLyAxJQpwdWIgY29uc3QgTUFYX1BST0JfQlBTOiB1MzIgPSA5XzkwMDsgLy8gOTklCgojW2Rlcml2ZShEZWJ1ZywgUGFydGlhbEVxLCBFcSwgQ2xvbmUsIENvcHkpXQpwdWIgZW51bSBNYXRoRXJyb3IgewogICAgT3ZlcmZsb3csCiAgICBJbnZhbGlkSW5wdXQsCiAgICBJbnN1ZmZpY2llbnRMaXF1aWRpdHksCn0KCiNbZGVyaXZlKERlYnVnLCBQYXJ0aWFsRXEsIEVxLCBDbG9uZSwgQ29weSldCnB1YiBlbnVtIFNldHRsZW1lbnQgewogICAgWWVzLAogICAgTm8sCiAgICBWb2lkLAp9CgojW2Rlcml2ZShEZWJ1ZywgUGFydGlhbEVxLCBFcSwgQ2xvbmUsIENvcHkpXQpwdWIgc3RydWN0IEJ1eVF1b3RlIHsKICAgIHB1YiBzaGFyZXNfb3V0OiBpMTI4LAogICAgcHViIGZlZTogaTEyOCwKICAgIC8vLyBDb2xsYXRlcmFsIHRoYXQgYWN0dWFsbHkgbWludHMgY29tcGxldGUgc2V0cyAoYGNvbGxhdGVyYWxfaW4gLSBmZWVgKS4KICAgIHB1YiBuZXQ6IGkxMjgsCiAgICBwdWIgbmV3X3Jlc2VydmVfYm91Z2h0OiBpMTI4LAogICAgcHViIG5ld19yZXNlcnZlX290aGVyOiBpMTI4LAp9CgojW2Rlcml2ZShEZWJ1ZywgUGFydGlhbEVxLCBFcSwgQ2xvbmUsIENvcHkpXQpwdWIgc3RydWN0IFNlbGxRdW90ZSB7CiAgICBwdWIgc2hhcmVzX2luOiBpMTI4LAogICAgcHViIGZlZTogaTEyOCwKICAgIC8vLyBDb21wbGV0ZSBzZXRzIGJ1cm5lZCBmcm9tIHRoZSBwb29sIChgY29sbGF0ZXJhbF9vdXQgKyBmZWVgKS4KICAgIHB1YiBncm9zczogaTEyOCwKICAgIHB1YiBuZXdfcmVzZXJ2ZV9zb2xkOiBpMTI4LAogICAgcHViIG5ld19yZXNlcnZlX290aGVyOiBpMTI4LAp9CgojW2Rlcml2ZShEZWJ1ZywgUGFydGlhbEVxLCBFcSwgQ2xvbmUsIENvcHkpXQpwdWIgc3RydWN0IFNlZWRSZXNlcnZlcyB7CiAgICBwdWIgcmVzZXJ2ZV95ZXM6IGkxMjgsCiAgICBwdWIgcmVzZXJ2ZV9ubzogaTEyOCwKICAgIC8vLyBPdXRjb21lIHNoYXJlcyBoYW5kZWQgYmFjayB0byB0aGUgbWFya2V0IGNyZWF0b3Igc28gdGhlIHBvb2wgb3BlbnMgYXQKICAgIC8vLyB0aGUgcmVxdWVzdGVkIHByb2JhYmlsaXR5IChvbmx5IG9uZSBvZiB0aGVzZSBpcyBub24temVybykuCiAgICBwdWIgY3JlYXRvcl95ZXM6IGkxMjgsCiAgICBwdWIgY3JlYXRvcl9ubzogaTEyOCwKfQoKZm4gbXVsKGE6IGkxMjgsIGI6IGkxMjgpIC0+IFJlc3VsdDxpMTI4LCBNYXRoRXJyb3I+IHsKICAgIGEuY2hlY2tlZF9tdWwoYikub2tfb3IoTWF0aEVycm9yOjpPdmVyZmxvdykKfQoKLy8vIGZsb29yKGEgKiBiIC8gYykKcHViIGZuIG11bF9kaXZfZmxvb3IoYTogaTEyOCwgYjogaTEyOCwgYzogaTEyOCkgLT4gUmVzdWx0PGkxMjgsIE1hdGhFcnJvcj4gewogICAgaWYgYSA8IDAgfHwgYiA8IDAgfHwgYyA8PSAwIHsKICAgICAgICByZXR1cm4gRXJyKE1hdGhFcnJvcjo6SW52YWxpZElucHV0KTsKICAgIH0KICAgIE9rKG11bChhLCBiKT8gLyBjKQp9CgovLy8gY2VpbChhICogYiAvIGMpLCB3cml0dGVuIHRvIGF2b2lkIG92ZXJmbG93aW5nIG9uIGBwICsgYyAtIDFgLgpwdWIgZm4gbXVsX2Rpdl9jZWlsKGE6IGkxMjgsIGI6IGkxMjgsIGM6IGkxMjgpIC0+IFJlc3VsdDxpMTI4LCBNYXRoRXJyb3I+IHsKICAgIGlmIGEgPCAwIHx8IGIgPCAwIHx8IGMgPD0gMCB7CiAgICAgICAgcmV0dXJuIEVycihNYXRoRXJyb3I6OkludmFsaWRJbnB1dCk7CiAgICB9CiAgICBsZXQgcCA9IG11bChhLCBiKT87CiAgICBsZXQgcSA9IHAgLyBjOwogICAgT2soaWYgcCAlIGMgIT0gMCB7IHEgKyAxIH0gZWxzZSB7IHEgfSkKfQoKLy8vIFNwb3QgcHJpY2Ugb2YgWUVTIGluIGJwczogcl9ubyAvIChyX3llcyArIHJfbm8pLgpwdWIgZm4gcHJpY2VfeWVzX2JwcyhyZXNlcnZlX3llczogaTEyOCwgcmVzZXJ2ZV9ubzogaTEyOCkgLT4gUmVzdWx0PGkxMjgsIE1hdGhFcnJvcj4gewogICAgbGV0IHN1bSA9IHJlc2VydmVfeWVzCiAgICAgICAgLmNoZWNrZWRfYWRkKHJlc2VydmVfbm8pCiAgICAgICAgLm9rX29yKE1hdGhFcnJvcjo6T3ZlcmZsb3cpPzsKICAgIGlmIHN1bSA8PSAwIHsKICAgICAgICByZXR1cm4gRXJyKE1hdGhFcnJvcjo6SW5zdWZmaWNpZW50TGlxdWlkaXR5KTsKICAgIH0KICAgIG11bF9kaXZfZmxvb3IocmVzZXJ2ZV9ubywgQlBTLCBzdW0pCn0KCi8vLyBZRVMgcHJpY2UgaW4gYnBzIG9mIHRoZSBwb29sICoqYWZ0ZXIqKiBhcHBseWluZyBhbiBvdXRjb21lLXJlbGF0aXZlCi8vLyByZXNlcnZlIHVwZGF0ZSAodGhlIGBuZXdfcmVzZXJ2ZV8qYCBwYWlyIG9mIGEgYEJ1eVF1b3RlYC9gU2VsbFF1b3RlYCkuCi8vLyBGb2xsb3dzIGByZXNlcnZlc19mb3JgJ3MgY29udmVudGlvbjogcGFzcyBgb3V0Y29tZV9pc195ZXMgPSBmYWxzZWAgZm9yIGEKLy8vIE5PIHRyYWRlLCB3aGVyZSBgcl9hZnRlcmAgaXMgdGhlIE5PIHJlc2VydmUuCnB1YiBmbiBwcmljZV9hZnRlcigKICAgIG91dGNvbWVfaXNfeWVzOiBib29sLAogICAgcl9hZnRlcjogaTEyOCwKICAgIHJfb3RoZXJfYWZ0ZXI6IGkxMjgsCikgLT4gUmVzdWx0PGkxMjgsIE1hdGhFcnJvcj4gewogICAgaWYgb3V0Y29tZV9pc195ZXMgewogICAgICAgIHByaWNlX3llc19icHMocl9hZnRlciwgcl9vdGhlcl9hZnRlcikKICAgIH0gZWxzZSB7CiAgICAgICAgcHJpY2VfeWVzX2JwcyhyX290aGVyX2FmdGVyLCByX2FmdGVyKQogICAgfQp9CgovLy8gUG9vbCBvcGVucyBhdCBgeWVzX2Jwc2AgcHJvYmFiaWxpdHkgd2l0aCBgc2VlZGAgY29tcGxldGUgc2V0cyBtaW50ZWQuCi8vLyBUaGUgcG9vbCBrZWVwcyBmZXdlciBvZiB0aGUgKmxpa2VsaWVyKiBvdXRjb21lOyB0aGUgY3JlYXRvciBrZWVwcyB0aGUgcmVzdC4KcHViIGZuIHNlZWRfcmVzZXJ2ZXMoc2VlZDogaTEyOCwgeWVzX2JwczogdTMyKSAtPiBSZXN1bHQ8U2VlZFJlc2VydmVzLCBNYXRoRXJyb3I+IHsKICAgIGlmIHNlZWQgPD0gMCB8fCAhKE1JTl9QUk9CX0JQUy4uPU1BWF9QUk9CX0JQUykuY29udGFpbnMoJnllc19icHMpIHsKICAgICAgICByZXR1cm4gRXJyKE1hdGhFcnJvcjo6SW52YWxpZElucHV0KTsKICAgIH0KICAgIGxldCBwID0geWVzX2JwcyBhcyBpMTI4OwogICAgbGV0IChyZXNlcnZlX3llcywgcmVzZXJ2ZV9ubykgPSBpZiBwID49IEJQUyAvIDIgewogICAgICAgIChtdWxfZGl2X2Zsb29yKHNlZWQsIEJQUyAtIHAsIHApPywgc2VlZCkKICAgIH0gZWxzZSB7CiAgICAgICAgKHNlZWQsIG11bF9kaXZfZmxvb3Ioc2VlZCwgcCwgQlBTIC0gcCk/KQogICAgfTsKICAgIGlmIHJlc2VydmVfeWVzIDw9IDAgfHwgcmVzZXJ2ZV9ubyA8PSAwIHsKICAgICAgICByZXR1cm4gRXJyKE1hdGhFcnJvcjo6SW52YWxpZElucHV0KTsKICAgIH0KICAgIE9rKFNlZWRSZXNlcnZlcyB7CiAgICAgICAgcmVzZXJ2ZV95ZXMsCiAgICAgICAgcmVzZXJ2ZV9ubywKICAgICAgICBjcmVhdG9yX3llczogc2VlZCAtIHJlc2VydmVfeWVzLAogICAgICAgIGNyZWF0b3Jfbm86IHNlZWQgLSByZXNlcnZlX25vLAogICAgfSkKfQoKLy8vIEJ1eSBgY29sbGF0ZXJhbF9pbmAgd29ydGggb2YgdGhlIG91dGNvbWUgd2hvc2UgcG9vbCByZXNlcnZlIGlzIGByX2JvdWdodGAuCi8vLwovLy8gMS4gZmVlID0gY2VpbChpbiAqIGZlZV9icHMgLyBCUFMpOyBuZXQgPSBpbiAtIGZlZQovLy8gMi4gbWludCBgbmV0YCBjb21wbGV0ZSBzZXRzIGludG8gdGhlIHBvb2w6IHJfb3RoZXIgKz0gbmV0Ci8vLyAzLiBwb29sIGtlZXBzIHJfYm91Z2h0JyA9IGNlaWwocl9ib3VnaHQgKiByX290aGVyIC8gcl9vdGhlcicpICAoayBwcmVzZXJ2ZWQpCi8vLyA0LiBidXllciByZWNlaXZlcyByX2JvdWdodCArIG5ldCAtIHJfYm91Z2h0JwpwdWIgZm4gY2FsY19idXkoCiAgICByX2JvdWdodDogaTEyOCwKICAgIHJfb3RoZXI6IGkxMjgsCiAgICBjb2xsYXRlcmFsX2luOiBpMTI4LAogICAgZmVlX2JwczogdTMyLAopIC0+IFJlc3VsdDxCdXlRdW90ZSwgTWF0aEVycm9yPiB7CiAgICBpZiBjb2xsYXRlcmFsX2luIDw9IDAgfHwgcl9ib3VnaHQgPD0gMCB8fCByX290aGVyIDw9IDAgewogICAgICAgIHJldHVybiBFcnIoTWF0aEVycm9yOjpJbnZhbGlkSW5wdXQpOwogICAgfQogICAgbGV0IGZlZSA9IG11bF9kaXZfY2VpbChjb2xsYXRlcmFsX2luLCBmZWVfYnBzIGFzIGkxMjgsIEJQUyk/OwogICAgbGV0IG5ldCA9IGNvbGxhdGVyYWxfaW4gLSBmZWU7CiAgICBpZiBuZXQgPD0gMCB7CiAgICAgICAgcmV0dXJuIEVycihNYXRoRXJyb3I6OkludmFsaWRJbnB1dCk7CiAgICB9CiAgICBsZXQgbmV3X290aGVyID0gcl9vdGhlci5jaGVja2VkX2FkZChuZXQpLm9rX29yKE1hdGhFcnJvcjo6T3ZlcmZsb3cpPzsKICAgIGxldCBuZXdfYm91Z2h0ID0gbXVsX2Rpdl9jZWlsKHJfYm91Z2h0LCByX290aGVyLCBuZXdfb3RoZXIpPzsKICAgIGxldCBzaGFyZXNfb3V0ID0gcl9ib3VnaHQuY2hlY2tlZF9hZGQobmV0KS5va19vcihNYXRoRXJyb3I6Ok92ZXJmbG93KT8gLSBuZXdfYm91Z2h0OwogICAgaWYgc2hhcmVzX291dCA8PSAwIHsKICAgICAgICByZXR1cm4gRXJyKE1hdGhFcnJvcjo6SW52YWxpZElucHV0KTsKICAgIH0KICAgIE9rKEJ1eVF1b3RlIHsKICAgICAgICBzaGFyZXNfb3V0LAogICAgICAgIGZlZSwKICAgICAgICBuZXQsCiAgICAgICAgbmV3X3Jlc2VydmVfYm91Z2h0OiBuZXdfYm91Z2h0LAogICAgICAgIG5ld19yZXNlcnZlX290aGVyOiBuZXdfb3RoZXIsCiAgICB9KQp9CgovLy8gU2VsbCBzaGFyZXMgb2YgdGhlIG91dGNvbWUgd2l0aCBwb29sIHJlc2VydmUgYHJfc29sZGAgZm9yIGFuIGV4YWN0Ci8vLyBgY29sbGF0ZXJhbF9vdXRgIChHbm9zaXMtc3R5bGUsIHNvIG5vIHNxdWFyZSByb290IG9uLWNoYWluKS4KLy8vCi8vLyAxLiBncm9zcyA9IGNlaWwob3V0ICogQlBTIC8gKEJQUyAtIGZlZV9icHMpKTsgZmVlID0gZ3Jvc3MgLSBvdXQKLy8vIDIuIGJ1cm4gYGdyb3NzYCBjb21wbGV0ZSBzZXRzIGZyb20gdGhlIHBvb2w6IHJfb3RoZXIgLT0gZ3Jvc3MKLy8vIDMuIHBvb2wgbXVzdCBlbmQgYXQgcl9zb2xkJyA9IGNlaWwocl9zb2xkICogcl9vdGhlciAvIHJfb3RoZXInKQovLy8gNC4gc2VsbGVyIGdpdmVzIHJfc29sZCcgKyBncm9zcyAtIHJfc29sZCBzaGFyZXMKLy8vCi8vLyBUbyBzZWxsIGFuIGV4YWN0IHNoYXJlIGNvdW50LCB0aGUgZnJvbnRlbmQgaW52ZXJ0cyB0aGlzIG9mZi1jaGFpbgovLy8gKHF1YWRyYXRpYywgc2VlIGBtb2RlbC9mcG1tX21vZGVsLnB5Ojpncm9zc19mb3Jfc2hhcmVzYCkgYW5kIHBhc3NlcyB0aGUKLy8vIHJlc3VsdCBhcyBgY29sbGF0ZXJhbF9vdXRgIHdpdGggYSBgbWF4X3NoYXJlc19pbmAgc2xpcHBhZ2UgYm91bmQuCnB1YiBmbiBjYWxjX3NlbGwoCiAgICByX3NvbGQ6IGkxMjgsCiAgICByX290aGVyOiBpMTI4LAogICAgY29sbGF0ZXJhbF9vdXQ6IGkxMjgsCiAgICBmZWVfYnBzOiB1MzIsCikgLT4gUmVzdWx0PFNlbGxRdW90ZSwgTWF0aEVycm9yPiB7CiAgICBpZiBjb2xsYXRlcmFsX291dCA8PSAwIHx8IHJfc29sZCA8PSAwIHx8IHJfb3RoZXIgPD0gMCB8fCAoZmVlX2JwcyBhcyBpMTI4KSA+PSBCUFMgewogICAgICAgIHJldHVybiBFcnIoTWF0aEVycm9yOjpJbnZhbGlkSW5wdXQpOwogICAgfQogICAgbGV0IGdyb3NzID0gbXVsX2Rpdl9jZWlsKGNvbGxhdGVyYWxfb3V0LCBCUFMsIEJQUyAtIGZlZV9icHMgYXMgaTEyOCk/OwogICAgbGV0IGZlZSA9IGdyb3NzIC0gY29sbGF0ZXJhbF9vdXQ7CiAgICBpZiBncm9zcyA+PSByX290aGVyIHsKICAgICAgICByZXR1cm4gRXJyKE1hdGhFcnJvcjo6SW5zdWZmaWNpZW50TGlxdWlkaXR5KTsKICAgIH0KICAgIGxldCBuZXdfb3RoZXIgPSByX290aGVyIC0gZ3Jvc3M7CiAgICBsZXQgbmV3X3NvbGQgPSBtdWxfZGl2X2NlaWwocl9zb2xkLCByX290aGVyLCBuZXdfb3RoZXIpPzsKICAgIGxldCBzaGFyZXNfaW4gPSBuZXdfc29sZC5jaGVja2VkX2FkZChncm9zcykub2tfb3IoTWF0aEVycm9yOjpPdmVyZmxvdyk/IC0gcl9zb2xkOwogICAgaWYgc2hhcmVzX2luIDw9IDAgewogICAgICAgIHJldHVybiBFcnIoTWF0aEVycm9yOjpJbnZhbGlkSW5wdXQpOwogICAgfQogICAgT2soU2VsbFF1b3RlIHsKICAgICAgICBzaGFyZXNfaW4sCiAgICAgICAgZmVlLAogICAgICAgIGdyb3NzLAogICAgICAgIG5ld19yZXNlcnZlX3NvbGQ6IG5ld19zb2xkLAogICAgICAgIG5ld19yZXNlcnZlX290aGVyOiBuZXdfb3RoZXIsCiAgICB9KQp9CgovLy8gVHJ1ZSB3aGVuIGEgYnV5J3MgYXZlcmFnZSBleGVjdXRpb24gcHJpY2UgYGNvbGxhdGVyYWxfaW4gLyBzaGFyZXNfb3V0YAovLy8gKGZlZXMgaW5jbHVkZWQpIGlzIGF0IG1vc3QgYGxpbWl0X2Jwc2AgcGVyIHNoYXJlICgxLjAgPSBCUFMpLgovLy8gQ29tcGFyZWQgYnkgY3Jvc3MtbXVsdGlwbGljYXRpb24gc28gZGl2aXNpb24gcm91bmRpbmcgY2Fubm90IGZsaXAgdGhlCi8vLyBkZWNpc2lvbjsgZXhhY3QgZXF1YWxpdHkgcGFzc2VzLiBgc2hhcmVzX291dGAgY29tZXMgZnJvbSBgY2FsY19idXlgLCBzbwovLy8gaXQgaXMgYWx3YXlzID4gMCBpbiBwcmFjdGljZS4KcHViIGZuIGJ1eV93aXRoaW5fbGltaXQoCiAgICBjb2xsYXRlcmFsX2luOiBpMTI4LAogICAgc2hhcmVzX291dDogaTEyOCwKICAgIGxpbWl0X2JwczogdTMyLAopIC0+IFJlc3VsdDxib29sLCBNYXRoRXJyb3I+IHsKICAgIGlmIGNvbGxhdGVyYWxfaW4gPCAwIHx8IHNoYXJlc19vdXQgPD0gMCB7CiAgICAgICAgcmV0dXJuIEVycihNYXRoRXJyb3I6OkludmFsaWRJbnB1dCk7CiAgICB9CiAgICBPayhtdWwoY29sbGF0ZXJhbF9pbiwgQlBTKT8gPD0gbXVsKHNoYXJlc19vdXQsIGxpbWl0X2JwcyBhcyBpMTI4KT8pCn0KCi8vLyBUcnVlIHdoZW4gYSBzZWxsJ3MgYXZlcmFnZSBleGVjdXRpb24gcHJpY2UgYGNvbGxhdGVyYWxfb3V0IC8gc2hhcmVzX2luYAovLy8gaXMgYXQgbGVhc3QgYGxpbWl0X2Jwc2AgcGVyIHNoYXJlLiBFeGFjdCBlcXVhbGl0eSBwYXNzZXM7IGEgemVybyBsaW1pdCBpcwovLy8gdHJpdmlhbGx5IHNhdGlzZmllZCAoYGNvbGxhdGVyYWxfb3V0ID49IDBgKSwgd2hpY2ggYnV5cyB0aGUgY2FsbGVyIG5vCi8vLyBwcm90ZWN0aW9uIOKAlCBzZWUgYHNlbGxfdjJgJ3MgZG9jcy4KcHViIGZuIHNlbGxfd2l0aGluX2xpbWl0KAogICAgY29sbGF0ZXJhbF9vdXQ6IGkxMjgsCiAgICBzaGFyZXNfaW46IGkxMjgsCiAgICBsaW1pdF9icHM6IHUzMiwKKSAtPiBSZXN1bHQ8Ym9vbCwgTWF0aEVycm9yPiB7CiAgICBpZiBjb2xsYXRlcmFsX291dCA8IDAgfHwgc2hhcmVzX2luIDw9IDAgewogICAgICAgIHJldHVybiBFcnIoTWF0aEVycm9yOjpJbnZhbGlkSW5wdXQpOwogICAgfQogICAgT2sobXVsKGNvbGxhdGVyYWxfb3V0LCBCUFMpPyA+PSBtdWwoc2hhcmVzX2luLCBsaW1pdF9icHMgYXMgaTEyOCk/KQp9CgovLy8gU3BsaXRzIGEgZ3Jvc3MgZmVlIGJldHdlZW4gdGhlIHByb3RvY29sIGFuZCB0aGUgTFAuCi8vLwovLy8gVGhlIHByb3RvY29sIHBvcnRpb24gcm91bmRzICoq dXAquKiBzbyBgcHJvdG9jb2wgKyBscCA9PSBmZWVgIGV4YWN0bHkgKG5vCi8vLyByb3VuZGluZyBsZWFrYWdlKTogdGhlIExQIGFic29yYnMgYXQgbW9zdCBvbmUgc3ViLXVuaXQgb2YgZHVzdCwgYW5kIHRoZQovLy8gZGVmYXVsdCBgcHJvdG9jb2xfc2hhcmVfYnBzID0gQlBTYCBpcyBleGFjdCAoYWxsIHByb3RvY29sLCAwIHRvIHRoZSBMUCkuCnB1YiBmbiBzcGxpdF9mZWUoZmVlOiBpMTI4LCBwcm90b2NvbF9zaGFyZV9icHM6IHUzMikgLT4gUmVzdWx0PChpMTI4LCBpMTI4KSwgTWF0aEVycm9yPiB7CiAgICBpZiBmZWUgPCAwIHx8IHByb3RvY29sX3NoYXJlX2JwcyBhcyBpMTI4ID4gQlBTIHsKICAgICAgICByZXR1cm4gRXJyKE1hdGhFcnJvcjo6SW52YWxpZElucHV0KTsKICAgIH0KICAgIGxldCBwcm90b2NvbCA9IG11bF9kaXZfY2VpbChmZWUsIHByb3RvY29sX3NoYXJlX2JwcyBhcyBpMTI4LCBCUFMpPzsKICAgIE9rKChwcm90b2NvbCwgZmVlIC0gcHJvdG9jb2wpKQp9CgovLy8gTWF4aW11bSBjb21wbGV0ZSBzZXRzIGEgaG9sZGVyIGNhbiBtZXJnZTogYG1pbih5ZXMsIG5vKWAuCi8vLwovLy8gU3BsaXQgbWludHMgZXF1YWwgWUVTIGFuZCBOTyBsZWdzLCBidXQgdHJhZGluZyB0aHJvdWdoIHRoZSBwb29sIGxlYXZlcyBhCi8vLyBob2xkZXIgd2l0aCB1bmJhbGFuY2VkIGxlZ3MuIE1lcmdpbmcgYnVybnMgb25lIG9mIGVhY2gsIHNvIHRoZSBiaW5kaW5nCi8vLyBjb25zdHJhaW50IGlzIHRoZSBzbWFsbGVyIGxlZy4gRXhwb3NlZCB0byBmcm9udGVuZHMgYXMgYHF1b3RlX21lcmdlX21heGAuCi8vLyBOZWdhdGl2ZSBpbnB1dHMgY2Fubm90IGFyaXNlIGZyb20gYFBvc2l0aW9uYCAoYWx3YXlzIG5vbi1uZWdhdGl2ZSksIGJ1dAovLy8gY2xhbXAgdG8gemVybyBhbnl3YXkgc28gdGhpcyBpcyB0b3RhbCBmb3IgYW55IGBpMTI4YCBwYWlyLgpwdWIgZm4gbWVyZ2VfbWF4KHllczogaTEyOCwgbm86IGkxMjgpIC0+IGkxMjggewogICAgaWYgeWVzIDwgbm8gewogICAgICAgIGlmIHllcyA8IDAgewogICAgICAgICAgICAwCiAgICAgICAgfSBlbHNlIHsKICAgICAgICAgICAgeWVzCiAgICAgICAgfQogICAgfSBlbHNlIGlmIG5vIDwgMCB7CiAgICAgICAgMAogICAgfSBlbHNlIHsKICAgICAgICBubwogICAgfQp9CgovLy8gQ29sbGF0ZXJhbCB2YWx1ZSBvZiBhICh5ZXMsIG5vKSBzaGFyZSBwYWlyIG9uY2UgYSBtYXJrZXQgaXMgZmluYWwuCi8vLyBWb2lkIHBheXMgMC41IHBlciBzaGFyZSwgd2hpY2gga2VlcHMgdG90YWwgcGF5b3V0cyA8PSBzZXRzIG1pbnRlZC4KcHViIGZuIHNldHRsZV92YWx1ZShraW5kOiBTZXR0bGVtZW50LCB5ZXM6IGkxMjgsIG5vOiBpMTI4KSAtPiBpMTI4IHsKICAgIG1hdGNoIGtpbmQgewogICAgICAgIFNldHRsZW1lbnQ6OlllcyA9PiB5ZXMsCiAgICAgICAgU2V0dGxlbWVudDo6Tm8gPT4gbm8sCiAgICAgICAgU2V0dGxlbWVudDo6Vm9pZCA9PiAoeWVzICsgbm8pIC8gMiwKICAgIH0KfQoKI1tjZmcodGVzdCldCm1vZCB0ZXN0cyB7CiAgICB1c2Ugc3VwZXI6Oio7CgogICAgI1t0ZXN0XQogICAgZm4gYnV5X2V4YW1wbGVfbWF0Y2hlc19tb2RlbCgpIHsKICAgICAgICAvLyAxMDAwLzEwMDAgcG9vbCwgYnV5IDEwMCB3aXRoIG5vIGZlZSAtPiAxOTAgc2hhcmVzLCByZXNlcnZlcyA5MTAvMTEwMAogICAgICAgIGxldCBxID0gY2FsY19idXkoMTAwMCwgMTAwMCwgMTAwLCAwKS51bndyYXAoKTsKICAgICAgICBhc3NlcnRfZXEocS5zaGFyZXNfb3V0LCAxOTApOwogICAgICAgIGFzc2VydF9lcShxLm5ld19yZXNlcnZlX2JvdWdodCwgOTEwKTsKICAgICAgICBhc3NlcnRfZXEocS5uZXdfcmVzZXJ2ZV9vdGhlciwgMTEwMCk7CiAgICB9CgogICAgI1t0ZXN0XQogICAgZm4gc2VsbF9leGFtcGxlX21hdGNoZXNfbW9kZWwoKSB7CiAgICAgICAgbGV0IHEgPSBjYWxjX3NlbGwoMTAwMCwgMTAwMCwgMTAwLCAwKS51bndyYXAoKTsKICAgICAgICBhc3NlcnRfZXEocS5zaGFyZXNfaW4sIDIxMik7CiAgICAgICAgYXNzZXJ0X2VxKHEuZ3Jvc3MsIDEwMCk7CiAgICAgICAgYXNzZXJ0X2VxKHEubmV3X3Jlc2VydmVfc29sZCwgMTExMik7CiAgICAgICAgYXNzZXJ0X2VxKHEubmV3X3Jlc2VydmVfb3RoZXIsIDkwMCk7CiAgICB9CgogICAgI1t0ZXN0XQogICAgZm4gc2VlZF9vcGVuc19hdF9yZXF1ZXN0ZWRfcHJvYmFiaWxpdHkoKSB7CiAgICAgICAgZm9yIHAgaW4gWzEwMHUsMzIsIDI1MDAsIDUwMDAsIDczMDAsIDk5MDBdIHsKICAgICAgICAgICAgbGV0IHMgPSBzZWVkX3Jlc2VydmVzKDEwXzAwMF8wMDBfMDAwLCBwKS51bndyYXAoKTsKICAgICAgICAgICAgbGV0IHByaWNlID0gcHJpY2VfeWVzX2JwcyhzLnJlc2VydmVfeWVzLCBzLnJlc2VydmVfbm8pLnVud3JhcCgpOwogICAgICAgICAgICBhc3NlcnQoKHByaWNlIC0gcCBhcyBpMTI4KS5hYnMoKSA8PSAxLCAicD17cH0gcHJpY2U9e3ByaWNlfSIpOwogICAgICAgICAgICBhc3NlcnQocy5jcmVhdG9yX3llcyA9PSAwIHx8IHMuY3JlYXRvcl9ubyA9PSAwKTsKICAgICAgICB9CiAgICB9CgogICAgI1t0ZXN0XQogICAgZm4ga19uZXZlcl9kZWNyZWFzZXNfYW5kX3JvdW5kX3RyaXBfbmV2ZXJfcHJvZml0cygpIHsKICAgICAgICAvLyB0aW55IExDRyBzbyB0aGlzIHN0YXlzIG5vX3N0ZC1mcmllbmRseQogICAgICAgIGxldCBtdXQgeDogdTY0ID0gMHg5RTM3Xzc5QjlfN0ZBNF83QzE1OwogICAgICAgIGxldCBtdXQgbmV4dCA9IG1vdmUgfHwgewogICAgICAgICAgICB4ID0geAogICAgICAgICAgICAgICAgLndyYXBwaW5nX211bCg2MzY0MTM2MjIzODQ2NzkzMDA1KQogICAgICAgICAgICAgICAgLndyYXBwaW5nX2FkZCgxNDQyNjk1MDQwODg4OTYzNDA3KTsKICAgICAgICAgICAgKHggeD4+IDMzKSBhcyBpMTI4CiAgICAgICAgfTsKICAgICAgICBmb3IgXyBpbiAwLi4yXzAwMCB7CiAgICAgICAgICAgIGxldCByeSA9IDFfMDAwXzAwMCArIG5leHQoKSAlIDFfMDAwXzAwMF8wMDA7CiAgICAgICAgICAgIGxldCBybiA9IDFfMDAwXzAwMCArIG5leHQoKSAlIDFfMDAwXzAwMF8wMDA7CiAgICAgICAgICAgIGxldCBhbXQgPSAxICsgbmV4dCgpICUgKHJ5Lm1pbihybikgLyAyKTsKICAgICAgICAgICAgbGV0IGZlZSA9IChuZXh0KCkgJSAzMDApIGFzIHUzMjsKICAgICAgICAgICAgbGV0IGswID0gcnkgKiBybjsKICAgICAgICAgICAgbGV0IHEgPSBjYWxjX2J1eShyeSwgcm4sIGFtdCwgZmVlKS51bndyYXAoKTsKICAgICAgICAgICAgYXNzZXJ0IShxLm5ld19yZXNlcnZlX2JvdWdodCAqIHEubmV3X3Jlc2VydmVfb3RoZXIgPj0gazApOwogICAgICAgICAgICAvLyBnZXR0aW5nIGBhbXRgIGJhY2sgb3V0IGNvc3RzIGF0IGxlYXN0IHRoZSBzaGFyZXMgdGhlIGJ1eSBwYWlkIG91dAogICAgICAgICAgICBpZiBsZXQgT2socykgPSBjYWxjX3NlbGwocS5uZXdfcmVzZXJ2ZV9ib3VnaHQsIHEubmV3X3Jlc2VydmVfb3RoZXIsIGFtdCwgZmVlKSB7CiAgICAgICAgICAgICAgICBhc3NlcnQocy5zaGFyZXNfaW4gPj0gcS5zaGFyZXNfb3V0LCAiZnJlZSBtb25leSIpOwogICAgICAgICAgICB9CiAgICAgICAgfQogICAgfQoKICAgICNbdGVzdF0KICAgIGZuIHZvaWRfbmV2ZXJfb3ZlcnBheXMoKSB7CiAgICAgICAgYXNzZXJ0X2VxIShzZXR0bGVfdmFsdWUoU2V0dGxlbWVudDo6Vm9pZCwgMywgNCksIDMpOwogICAgICAgIGFzc2VydCEoc2V0dGxlX3ZhbHVlKFNldHRsZW1lbnQ6OlZvaWQsIDUsIDUpIDw9IDUpOwogICAgfQoKICAgICNbdGVzdF0KICAgIGZuIHNwbGl0X2ZlZV9zdW1zX2V4YWN0bHkoKSB7CiAgICAgICAgbGV0IG11dCB4OiB1NjQgPSAweDlFMzdfNzlCOV83RkE0XzdDMTU7CiAgICAgICAgbGV0IG11dCBuZXh0ID0gbW92ZSB8fCB7CiAgICAgICAgICAgIHggPSB4CiAgICAgICAgICAgICAgICAud3JhcHBpbmdfbXVsKDYzNjQxMzYyMjM4NDY3OTMwMDUpCiAgICAgICAgICAgICAgICAud3JhcHBpbmdfYWRkKDE0NDI2OTUwNDA4ODg5NjM0MDcpOwogICAgICAgICAgICAoeCA+PiAzMykgYXMgaTEyOAogICAgICAgIH07CiAgICAgICAgZm9yIF8gaW4gMC4uMl8wMDAgewogICAgICAgICAgICBsZXQgZmVlID0gbmV4dCgpICUgMV8wMDBfMDAwXzAwMF8wMDA7CiAgICAgICAgICAgIGxldCBzaGFyZSA9IChuZXh0KCkgJSAoQlBTICsgMSkpIGFzIHUzMjsKICAgICAgICAgICAgbGV0IChwcm90b2NvbCwgbHApID0gc3BsaXRfZmVlKGZlZSwgc2hhcmUpLnVud3JhcCgpOwogICAgICAgICAgICBhc3NlcnRfZXEocHJvdG9jb2wgKyBscCwgZmVlKTsKICAgICAgICAgICAgYXNzZXJ0IShscCA+PSAwKTsKICAgICAgICAgICAgYXNzZXJ0IShwcm90b2NvbCA+PSAwKTsKICAgICAgICB9CiAgICB9CgogICAgI1t0ZXN0XQogICAgZm4gbWVyZ2VfbWF4X2tub3duX3ZhbHVlcygpIHsKICAgICAgICBhc3NlcnRfZXEobWVyZ2VfbWF4KDAsIDApLCAwKTsKICAgICAgICBhc3NlcnRfZXEobWVyZ2VfbWF4KDUsIDApLCAwKTsKICAgICAgICBhc3NlcnRfZXEobWVyZ2VfbWF4KDAsIDcpLCAwKTsKICAgICAgICBhc3NlcnRfZXEobWVyZ2VfbWF4KDUsIDcpLCA1KTsKICAgICAgICBhc3NlcnRfZXEobWVyZ2VfbWF4KDcsIDUpLCA1KTsKICAgICAgICBhc3NlcnRfZXEobWVyZ2VfbWF4KDUsIDUpLCA1KTsKICAgICAgICBhc3NlcnRfZXEobWVyZ2VfbWF4KDEwXzAwMF8wMDBfMDAwLCAzKSwgMyk7CiAgICAgICAgLy8gbmVnYXRpdmUgaW5wdXRzIGNsYW1wIHRvIHplcm8gcmF0aGVyIHRoYW4gcGFuaWNraW5nCiAgICAgICAgYXNzZXJ0X2VxIShtZXJnZV9tYXgoLTEsIDUpLCAwKTsKICAgICAgICBhc3NlcnRfZXEobWVyZ2VfbWF4KDUsIC0xKSwgMCk7CiAgICAgICAgYXNzZXJ0X2VxIShtZXJnZV9tYXgoLTEsIC0xKSwgMCk7CiAgICB9CgogICAgI1t0ZXN0XQogICAgZm4gbWVyZ2VfbWF4X2lzX21pbl9vbl9yYW5kb21fcGFpcnMoKSB7CiAgICAgICAgbGV0IG11dCB4OiB1NjQgPSAweERFQURfQkVFRl9DQVZFX0JBQkU7CiAgICAgICAgbGV0IG11dCBuZXh0ID0gbW92ZSB8fCB7CiAgICAgICAgICAgIHggPSB4CiAgICAgICAgICAgICAgICAud3JhcHBpbmdfbXVsKDYzNjQxMzYyMjM4NDY3OTMwMDUpCiAgICAgICAgICAgICAgICAud3JhcHBpbmdfYWRkKDE0NDI2OTUwNDA4ODg5NjM0MDcpOwogICAgICAgICAgICAoeCA+PiAzMykgYXMgaTEyOAogICAgICAgIH07CiAgICAgICAgZm9yIF8gaW4gMC4uMl8wMDAgewogICAgICAgICAgICBsZXQgeWVzID0gbmV4dCgpICUgMV8wMDBfMDAwXzAwMF8wMDA7CiAgICAgICAgICAgIGxldCBubyA9IG5leHQoKSAlIDFfMDAwXzAwMF8wMDBfMDAwOwogICAgICAgICAgICBhc3NlcnRfZXEobWVyZ2VfbWF4KHllcywgbm8pLCB5ZXMubWluKG5vKSk7CiAgICAgICAgfQogICAgfQp9Cg==
+//! Pure integer math for a binary fixed-product market maker (FPMM).
+//!
+//! No Soroban types in here, so `cargo test` exercises it natively and
+//! `model/fpmm_model.py` mirrors it line by line for property testing.
+//!
+//! Conventions
+//! - All amounts are non-negative `i128` in collateral base units
+//!   (USDC on Stellar = 7 decimals, so 1 USDC = 10_000_000).
+//! - Rounding always favours the pool: fees round up, shares out round down,
+//!   shares in round up. This is what keeps the pool invariant `k = r_yes * r_no`
+//!   non-decreasing and blocks dust-splitting attacks.
+//! - `MAX_SETS` bounds market size so that any product of two quantities
+//!   (both <= 1e15) is <= 1e30, far below `i128::MAX` (~1.7e38). Every
+//!   multiplication is still `checked_*` as a second line of defence.
+
+pub const BPS: i128 = 10_000;
+pub const MAX_SETS: i128 = 1_000_000_000_000_000; // 1e15 = 100M USDC (7 dp)
+pub const MIN_PROB_BPS: u32 = 100; // 1%
+pub const MAX_PROB_BPS: u32 = 9_900; // 99%
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum MathError {
+    Overflow,
+    InvalidInput,
+    InsufficientLiquidity,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum Settlement {
+    Yes,
+    No,
+    Void,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct BuyQuote {
+    pub shares_out: i128,
+    pub fee: i128,
+    /// Collateral that actually mints complete sets (`collateral_in - fee`).
+    pub net: i128,
+    pub new_reserve_bought: i128,
+    pub new_reserve_other: i128,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct SellQuote {
+    pub shares_in: i128,
+    pub fee: i128,
+    /// Complete sets burned from the pool (`collateral_out + fee`).
+    pub gross: i128,
+    pub new_reserve_sold: i128,
+    pub new_reserve_other: i128,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct SeedReserves {
+    pub reserve_yes: i128,
+    pub reserve_no: i128,
+    /// Outcome shares handed back to the market creator so the pool opens at
+    /// the requested probability (only one of these is non-zero).
+    pub creator_yes: i128,
+    pub creator_no: i128,
+}
+
+fn mul(a: i128, b: i128) -> Result<i128, MathError> {
+    a.checked_mul(b).ok_or(MathError::Overflow)
+}
+
+/// floor(a * b / c)
+pub fn mul_div_floor(a: i128, b: i128, c: i128) -> Result<i128, MathError> {
+    if a < 0 || b < 0 || c <= 0 {
+        return Err(MathError::InvalidInput);
+    }
+    Ok(mul(a, b)? / c)
+}
+
+/// ceil(a * b / c), written to avoid overflowing on `p + c - 1`.
+pub fn mul_div_ceil(a: i128, b: i128, c: i128) -> Result<i128, MathError> {
+    if a < 0 || b < 0 || c <= 0 {
+        return Err(MathError::InvalidInput);
+    }
+    let p = mul(a, b)?;
+    let q = p / c;
+    Ok(if p % c != 0 { q + 1 } else { q })
+}
+
+/// Spot price of YES in bps: r_no / (r_yes + r_no).
+pub fn price_yes_bps(reserve_yes: i128, reserve_no: i128) -> Result<i128, MathError> {
+    let sum = reserve_yes
+        .checked_add(reserve_no)
+        .ok_or(MathError::Overflow)?;
+    if sum <= 0 {
+        return Err(MathError::InsufficientLiquidity);
+    }
+    mul_div_floor(reserve_no, BPS, sum)
+}
+
+/// YES price in bps of the pool **after** applying an outcome-relative
+/// reserve update (the `new_reserve_*` pair of a `BuyQuote`/`SellQuote`).
+/// Follows `reserves_for`'s convention: pass `outcome_is_yes = false` for a
+/// NO trade, where `r_after` is the NO reserve.
+pub fn price_after(
+    outcome_is_yes: bool,
+    r_after: i128,
+    r_other_after: i128,
+) -> Result<i128, MathError> {
+    if outcome_is_yes {
+        price_yes_bps(r_after, r_other_after)
+    } else {
+        price_yes_bps(r_other_after, r_after)
+    }
+}
+
+/// Pool opens at `yes_bps` probability with `seed` complete sets minted.
+/// The pool keeps fewer of the *likelier* outcome; the creator keeps the rest.
+pub fn seed_reserves(seed: i128, yes_bps: u32) -> Result<SeedReserves, MathError> {
+    if seed <= 0 || !(MIN_PROB_BPS..=MAX_PROB_BPS).contains(&yes_bps) {
+        return Err(MathError::InvalidInput);
+    }
+    let p = yes_bps as i128;
+    let (reserve_yes, reserve_no) = if p >= BPS / 2 {
+        (mul_div_floor(seed, BPS - p, p)?, seed)
+    } else {
+        (seed, mul_div_floor(seed, p, BPS - p)?)
+    };
+    if reserve_yes <= 0 || reserve_no <= 0 {
+        return Err(MathError::InvalidInput);
+    }
+    Ok(SeedReserves {
+        reserve_yes,
+        reserve_no,
+        creator_yes: seed - reserve_yes,
+        creator_no: seed - reserve_no,
+    })
+}
+
+/// Buy `collateral_in` worth of the outcome whose pool reserve is `r_bought`.
+///
+/// 1. fee = ceil(in * fee_bps / BPS); net = in - fee
+/// 2. mint `net` complete sets into the pool: r_other += net
+/// 3. pool keeps r_bought' = ceil(r_bought * r_other / r_other')  (k preserved)
+/// 4. buyer receives r_bought + net - r_bought'
+pub fn calc_buy(
+    r_bought: i128,
+    r_other: i128,
+    collateral_in: i128,
+    fee_bps: u32,
+) -> Result<BuyQuote, MathError> {
+    if collateral_in <= 0 || r_bought <= 0 || r_other <= 0 {
+        return Err(MathError::InvalidInput);
+    }
+    let fee = mul_div_ceil(collateral_in, fee_bps as i128, BPS)?;
+    let net = collateral_in - fee;
+    if net <= 0 {
+        return Err(MathError::InvalidInput);
+    }
+    let new_other = r_other.checked_add(net).ok_or(MathError::Overflow)?;
+    let new_bought = mul_div_ceil(r_bought, r_other, new_other)?;
+    let shares_out = r_bought.checked_add(net).ok_or(MathError::Overflow)? - new_bought;
+    if shares_out <= 0 {
+        return Err(MathError::InvalidInput);
+    }
+    Ok(BuyQuote {
+        shares_out,
+        fee,
+        net,
+        new_reserve_bought: new_bought,
+        new_reserve_other: new_other,
+    })
+}
+
+/// Sell shares of the outcome with pool reserve `r_sold` for an exact
+/// `collateral_out` (Gnosis-style, so no square root on-chain).
+///
+/// 1. gross = ceil(out * BPS / (BPS - fee_bps)); fee = gross - out
+/// 2. burn `gross` complete sets from the pool: r_other -= gross
+/// 3. pool must end at r_sold' = ceil(r_sold * r_other / r_other')
+/// 4. seller gives r_sold' + gross - r_sold shares
+///
+/// To sell an exact share count, the frontend inverts this off-chain
+/// (quadratic, see `model/fpmm_model.py::gross_for_shares`) and passes the
+/// result as `collateral_out` with a `max_shares_in` slippage bound.
+pub fn calc_sell(
+    r_sold: i128,
+    r_other: i128,
+    collateral_out: i128,
+    fee_bps: u32,
+) -> Result<SellQuote, MathError> {
+    if collateral_out <= 0 || r_sold <= 0 || r_other <= 0 || (fee_bps as i128) >= BPS {
+        return Err(MathError::InvalidInput);
+    }
+    let gross = mul_div_ceil(collateral_out, BPS, BPS - fee_bps as i128)?;
+    let fee = gross - collateral_out;
+    if gross >= r_other {
+        return Err(MathError::InsufficientLiquidity);
+    }
+    let new_other = r_other - gross;
+    let new_sold = mul_div_ceil(r_sold, r_other, new_other)?;
+    let shares_in = new_sold.checked_add(gross).ok_or(MathError::Overflow)? - r_sold;
+    if shares_in <= 0 {
+        return Err(MathError::InvalidInput);
+    }
+    Ok(SellQuote {
+        shares_in,
+        fee,
+        gross,
+        new_reserve_sold: new_sold,
+        new_reserve_other: new_other,
+    })
+}
+
+/// True when a buy's average execution price `collateral_in / shares_out`
+/// (fees included) is at most `limit_bps` per share (1.0 = BPS).
+/// Compared by cross-multiplication so division rounding cannot flip the
+/// decision; exact equality passes. `shares_out` comes from `calc_buy`, so
+/// it is always > 0 in practice.
+pub fn buy_within_limit(
+    collateral_in: i128,
+    shares_out: i128,
+    limit_bps: u32,
+) -> Result<bool, MathError> {
+    if collateral_in < 0 || shares_out <= 0 {
+        return Err(MathError::InvalidInput);
+    }
+    Ok(mul(collateral_in, BPS)? <= mul(shares_out, limit_bps as i128)?)
+}
+
+/// True when a sell's average execution price `collateral_out / shares_in`
+/// is at least `limit_bps` per share. Exact equality passes; a zero limit is
+/// trivially satisfied (`collateral_out >= 0`), which buys the caller no
+/// protection — see `sell_v2`'s docs.
+pub fn sell_within_limit(
+    collateral_out: i128,
+    shares_in: i128,
+    limit_bps: u32,
+) -> Result<bool, MathError> {
+    if collateral_out < 0 || shares_in <= 0 {
+        return Err(MathError::InvalidInput);
+    }
+    Ok(mul(collateral_out, BPS)? >= mul(shares_in, limit_bps as i128)?)
+}
+
+/// Splits a gross fee between the protocol and the LP.
+///
+/// The protocol portion rounds **up** so `protocol + lp == fee` exactly (no
+/// rounding leakage): the LP absorbs at most one sub-unit of dust, and the
+/// default `protocol_share_bps = BPS` is exact (all protocol, 0 to the LP).
+pub fn split_fee(fee: i128, protocol_share_bps: u32) -> Result<(i128, i128), MathError> {
+    if fee < 0 || protocol_share_bps as i128 > BPS {
+        return Err(MathError::InvalidInput);
+    }
+    let protocol = mul_div_ceil(fee, protocol_share_bps as i128, BPS)?;
+    Ok((protocol, fee - protocol))
+}
+
+/// Maximum complete sets a holder can merge: `min(yes, no)`.
+///
+/// Split mints equal YES and NO legs, but trading through the pool leaves a
+/// holder with unbalanced legs. Merging burns one of each, so the binding
+/// constraint is the smaller leg. Exposed to frontends as `quote_merge_max`.
+/// Negative inputs cannot arise from `Position` (always non-negative), but
+/// clamp to zero anyway so this is total for any `i128` pair.
+pub fn merge_max(yes: i128, no: i128) -> i128 {
+    if yes < no {
+        if yes < 0 {
+            0
+        } else {
+            yes
+        }
+    } else if no < 0 {
+        0
+    } else {
+        no
+    }
+}
+
+/// Collateral value of a (yes, no) share pair once a market is final.
+/// Void pays 0.5 per share, which keeps total payouts <= sets minted.
+pub fn settle_value(kind: Settlement, yes: i128, no: i128) -> i128 {
+    match kind {
+        Settlement::Yes => yes,
+        Settlement::No => no,
+        Settlement::Void => (yes + no) / 2,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn buy_example_matches_model() {
+        // 1000/1000 pool, buy 100 with no fee -> 190 shares, reserves 910/1100
+        let q = calc_buy(1000, 1000, 100, 0).unwrap();
+        assert_eq!(q.shares_out, 190);
+        assert_eq!(q.new_reserve_bought, 910);
+        assert_eq!(q.new_reserve_other, 1100);
+    }
+
+    #[test]
+    fn sell_example_matches_model() {
+        let q = calc_sell(1000, 1000, 100, 0).unwrap();
+        assert_eq!(q.shares_in, 212);
+        assert_eq!(q.gross, 100);
+        assert_eq!(q.new_reserve_sold, 1112);
+        assert_eq!(q.new_reserve_other, 900);
+    }
+
+    #[test]
+    fn seed_opens_at_requested_probability() {
+        for p in [100u32, 2500, 5000, 7300, 9900] {
+            let s = seed_reserves(10_000_000_000, p).unwrap();
+            let price = price_yes_bps(s.reserve_yes, s.reserve_no).unwrap();
+            assert!((price - p as i128).abs() <= 1, "p={p} price={price}");
+            assert!(s.creator_yes == 0 || s.creator_no == 0);
+        }
+    }
+
+    #[test]
+    fn k_never_decreases_and_round_trip_never_profits() {
+        // tiny LCG so this stays no_std-friendly
+        let mut x: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next = move || {
+            x = x
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (x >> 33) as i128
+        };
+        for _ in 0..2_000 {
+            let ry = 1_000_000 + next() % 1_000_000_000;
+            let rn = 1_000_000 + next() % 1_000_000_000;
+            let amt = 1 + next() % (ry.min(rn) / 2);
+            let fee = (next() % 300) as u32;
+            let k0 = ry * rn;
+            let q = calc_buy(ry, rn, amt, fee).unwrap();
+            assert!(q.new_reserve_bought * q.new_reserve_other >= k0);
+            // getting `amt` back out costs at least the shares the buy paid out
+            if let Ok(s) = calc_sell(q.new_reserve_bought, q.new_reserve_other, amt, fee) {
+                assert!(s.shares_in >= q.shares_out, "free money");
+            }
+        }
+    }
+
+    #[test]
+    fn void_never_overpays() {
+        assert_eq!(settle_value(Settlement::Void, 3, 4), 3);
+        assert!(settle_value(Settlement::Void, 5, 5) <= 5);
+    }
+
+    #[test]
+    fn split_fee_sums_exactly() {
+        let mut x: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next = move || {
+            x = x
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (x >> 33) as i128
+        };
+        for _ in 0..2_000 {
+            let fee = next() % 1_000_000_000_000;
+            let share = (next() % (BPS + 1)) as u32;
+            let (protocol, lp) = split_fee(fee, share).unwrap();
+            assert_eq!(protocol + lp, fee, "fee={fee} share={share}");
+            assert!(protocol >= 0 && lp >= 0);
+            // protocol rounds up: never below the exact proportional share
+            assert!(protocol * BPS >= fee * share as i128);
+        }
+    }
+
+    #[test]
+    fn split_fee_default_is_all_protocol() {
+        assert_eq!(split_fee(12_345, 10_000).unwrap(), (12_345, 0));
+        assert_eq!(split_fee(12_345, 0).unwrap(), (0, 12_345));
+        assert_eq!(split_fee(0, 3_333).unwrap(), (0, 0));
+    }
+
+    #[test]
+    fn buy_within_limit_boundaries() {
+        // avg price exactly 1.0: passing costs the full limit, passes
+        assert!(buy_within_limit(100, 100, 10_000).unwrap());
+        // cheaper than the limit
+        assert!(buy_within_limit(100, 101, 10_000).unwrap());
+        // one unit above the limit fails
+        assert!(!buy_within_limit(101, 100, 10_000).unwrap());
+        // 100 in -> 200 shares = 0.5 per share, exactly at 5_000 bps
+        assert!(buy_within_limit(100, 200, 5_000).unwrap());
+        assert!(!buy_within_limit(101, 200, 5_000).unwrap());
+    }
+
+    #[test]
+    fn sell_within_limit_boundaries() {
+        assert!(sell_within_limit(100, 100, 10_000).unwrap());
+        assert!(!sell_within_limit(99, 100, 10_000).unwrap());
+        // 100 out from 200 shares = 0.5 per share, exactly at 5_000 bps
+        assert!(sell_within_limit(100, 200, 5_000).unwrap());
+        assert!(!sell_within_limit(100, 201, 5_000).unwrap());
+        // a zero limit is trivially satisfied
+        assert!(sell_within_limit(0, 1, 0).unwrap());
+    }
+
+    #[test]
+    fn price_after_maps_both_sides() {
+        assert_eq!(price_after(true, 1_000, 1_000).unwrap(), 5_000);
+        assert_eq!(price_after(false, 1_000, 1_000).unwrap(), 5_000);
+        // NO buy pushing NO reserve to 910 with 1100 YES: YES price is
+        // 1100 / (1100 + 910), i.e. price_yes_bps(yes, no)
+        assert_eq!(
+            price_after(false, 910, 1_100).unwrap(),
+            price_yes_bps(1_100, 910).unwrap()
+        );
+    }
+
+    #[test]
+    fn merge_max_known_values() {
+        assert_eq!(merge_max(0, 0), 0);
+        assert_eq!(merge_max(5, 0), 0);
+        assert_eq!(merge_max(0, 7), 0);
+        assert_eq!(merge_max(5, 7), 5);
+        assert_eq!(merge_max(7, 5), 5);
+        assert_eq!(merge_max(5, 5), 5);
+        assert_eq!(merge_max(10_000_000_000, 3), 3);
+        // negative inputs clamp to zero rather than panicking
+        assert_eq!(merge_max(-1, 5), 0);
+        assert_eq!(merge_max(5, -1), 0);
+        assert_eq!(merge_max(-1, -1), 0);
+    }
+
+    #[test]
+    fn merge_max_is_min_on_random_pairs() {
+        let mut x: u64 = 0xDEAD_BEEF_CAVE_BABE;
+        let mut next = move || {
+            x = x
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (x >> 33) as i128
+        };
+        for _ in 0..2_000 {
+            let yes = next() % 1_000_000_000_000_000;
+            let no = next() % 1_000_000_000_000_000;
+            assert_eq!(merge_max(yes, no), yes.min(no));
+        }
+    }
+}

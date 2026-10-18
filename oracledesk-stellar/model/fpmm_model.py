@@ -351,6 +351,41 @@ def _check_limits_boundary_and_symmetry():
     assert not buy_within_limit(1, 1, 0)
 
 
+def _check_price_after_maps_both_sides():
+    """Mirrors math.rs's price_after tests: outcome_is_yes selects which of
+    the two post-trade reserves is the YES reserve."""
+    for r, other in ((1000, 1000), (910, 1100), (1, 9999), (5893, 4107)):
+        assert price_after(True, r, other) == price_yes_bps(r, other)
+        assert price_after(False, r, other) == price_yes_bps(other, r)
+
+    # Worked example shared by all three mirrors: buying 10 USDC of YES in a
+    # 100-sets pool at 50% with a 1% fee moves YES from 5000 to 5470 bps.
+    q = calc_buy(1_000_000_000, 1_000_000_000, 100_000_000, 100)
+    assert price_yes_bps(1_000_000_000, 1_000_000_000) == 5000
+    assert price_after_buy(True, q) == 5470
+    # Selling right back must not land above the pre-trade price: two fees
+    # and pool-favoring rounding always leave the seller worse off.
+    s = calc_sell(q.new_reserve_bought, q.new_reserve_other, 100_000_000, 100)
+    assert price_after_sell(True, s) < 5000
+
+
+def _check_limits_boundary_and_symmetry():
+    # Exact equality passes, one unit over fails, in both directions.
+    assert buy_within_limit(100, 100, 10_000)
+    assert buy_within_limit(100, 101, 10_000)
+    assert not buy_within_limit(101, 100, 10_000)
+    assert buy_within_limit(100, 200, 5_000)
+    assert not buy_within_limit(101, 200, 5_000)
+    assert sell_within_limit(100, 100, 10_000)
+    assert not sell_within_limit(99, 100, 10_000)
+    assert sell_within_limit(100, 200, 5_000)
+    assert not sell_within_limit(100, 201, 5_000)
+    # A zero limit is trivially satisfied for sells (documented as "no
+    # protection") and only binds a buy at a zero average price.
+    assert sell_within_limit(0, 1, 0)
+    assert not buy_within_limit(1, 1, 0)
+
+
 def run_all():
     _check_known_values()
     _check_seed_opens_at_requested_probability()
