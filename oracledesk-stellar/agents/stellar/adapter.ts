@@ -21,7 +21,12 @@ const REPO_ROOT = join(HERE, "..", "..");
 
 export interface Deployments {
   deployer: string;
+  /** The treasury's constructor agent (all roles). Kept for deployments
+   * that predate separate maker/trader identities. */
   agent: string;
+  /** Per-role agents registered with the treasury's agent registry by
+   * scripts/deploy-testnet.sh (`set_agent`, live after `config_delay`). */
+  agents?: { maker: string; trader: string };
   contracts: {
     usdc: string;
     market_core: string;
@@ -35,6 +40,26 @@ export function loadDeployments(path = join(REPO_ROOT, "deployments", "testnet.j
   return JSON.parse(readFileSync(path, "utf8")) as Deployments;
 }
 
+export type AgentRole = "maker" | "trader";
+
+/**
+ * Which key and address an agent CLI acts as. Each role prefers its own
+ * secret (`MAKER_SECRET_KEY` / `TRADER_SECRET_KEY`) and registered address
+ * (`deployments.agents`), falling back to the shared `AGENT_SECRET_KEY` and
+ * the constructor agent `deployments.agent`.
+ */
+export function agentCredentials(
+  role: AgentRole,
+  env: NodeJS.ProcessEnv,
+  deployments: Deployments,
+): { agentSecret?: string; agentAddress: string } {
+  const roleSecret = role === "maker" ? env.MAKER_SECRET_KEY : env.TRADER_SECRET_KEY;
+  return {
+    agentSecret: roleSecret || env.AGENT_SECRET_KEY,
+    agentAddress: deployments.agents?.[role] ?? deployments.agent,
+  };
+}
+
 export interface StellarAdapterOptions {
   /** "dry-run" (default): builds and logs what would be submitted, never
    * signs or sends. "live": actually submits real testnet transactions. */
@@ -44,6 +69,9 @@ export interface StellarAdapterOptions {
   /** The agent's secret key (`S...`). Required for `mode: "live"`; ignored
    * (and may be omitted) in dry-run. */
   agentSecret?: string;
+  /** The acting agent's address for dry-run descriptions (live mode always
+   * uses the secret key's public key). Defaults to `deployments.agent`. */
+  agentAddress?: string;
   deployments: Deployments;
 }
 
@@ -82,6 +110,12 @@ export class StellarAdapter {
 
   get mode(): "dry-run" | "live" {
     return this.opts.mode;
+  }
+
+  /** The address every treasury agent entrypoint is called as (its first
+   * `agent` argument), and the agent traces are published for. */
+  get agent(): string {
+    return this.publicKey ?? this.opts.agentAddress ?? this.opts.deployments.agent;
   }
 
   /**
@@ -132,8 +166,9 @@ export class StellarAdapter {
     seed_amount: bigint;
     initial_yes_bps: number;
   }): Promise<AdapterResult<bigint>> {
-    return this.run("treasury", "@oracledesk/bindings-treasury", "agent_create_market", args, (client) =>
-      client.agent_create_market(args),
+    const call = { agent: this.agent, ...args };
+    return this.run("treasury", "@oracledesk/bindings-treasury", "agent_create_market", call, (client) =>
+      client.agent_create_market(call),
     );
   }
 
@@ -143,8 +178,9 @@ export class StellarAdapter {
     collateral_in: bigint;
     min_shares_out: bigint;
   }): Promise<AdapterResult<bigint>> {
-    return this.run("treasury", "@oracledesk/bindings-treasury", "agent_buy", args, (client) =>
-      client.agent_buy(args),
+    const call = { agent: this.agent, ...args };
+    return this.run("treasury", "@oracledesk/bindings-treasury", "agent_buy", call, (client) =>
+      client.agent_buy(call),
     );
   }
 
@@ -162,8 +198,9 @@ export class StellarAdapter {
     limit_price_bps: number;
     deadline: bigint;
   }): Promise<AdapterResult<bigint>> {
-    return this.run("treasury", "@oracledesk/bindings-treasury", "agent_buy_v2", args, (client) =>
-      client.agent_buy_v2(args),
+    const call = { agent: this.agent, ...args };
+    return this.run("treasury", "@oracledesk/bindings-treasury", "agent_buy_v2", call, (client) =>
+      client.agent_buy_v2(call),
     );
   }
 
@@ -173,8 +210,9 @@ export class StellarAdapter {
     collateral_out: bigint;
     max_shares_in: bigint;
   }): Promise<AdapterResult<bigint>> {
-    return this.run("treasury", "@oracledesk/bindings-treasury", "agent_sell", args, (client) =>
-      client.agent_sell(args),
+    const call = { agent: this.agent, ...args };
+    return this.run("treasury", "@oracledesk/bindings-treasury", "agent_sell", call, (client) =>
+      client.agent_sell(call),
     );
   }
 
@@ -191,8 +229,9 @@ export class StellarAdapter {
     limit_price_bps: number;
     deadline: bigint;
   }): Promise<AdapterResult<bigint>> {
-    return this.run("treasury", "@oracledesk/bindings-treasury", "agent_sell_v2", args, (client) =>
-      client.agent_sell_v2(args),
+    const call = { agent: this.agent, ...args };
+    return this.run("treasury", "@oracledesk/bindings-treasury", "agent_sell_v2", call, (client) =>
+      client.agent_sell_v2(call),
     );
   }
 

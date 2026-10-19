@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildTrace, canonicalize, hashTrace } from "./trace.js";
+import { buildTrace, canonicalize, commitmentFor, hashTrace, newSalt } from "./trace.js";
 
 test("canonicalize sorts object keys regardless of insertion order", () => {
   const a = canonicalize({ b: 1, a: 2 });
@@ -74,4 +74,32 @@ test("buildTrace defaults timestamp to now when omitted", () => {
   });
   const after = Math.floor(Date.now() / 1000);
   assert.ok(built.trace.timestamp >= before && built.trace.timestamp <= after);
+});
+
+// ─── Commit-reveal (#51) ─────────────────────────────────────────────────────
+
+
+test("commitmentFor matches the Rust golden vector", () => {
+  // Same vector as commitment_vector_matches_typescript in
+  // contracts/reasoning-registry/src/lib.rs: hash = 0x07 * 32, salt = 0x09 * 32.
+  assert.equal(
+    commitmentFor("07".repeat(32), "09".repeat(32)),
+    "50a630b83f3b4e9c444265cc6af2a094bff7e3848a334f0167fb549d6ca7ee52",
+  );
+  assert.equal(
+    commitmentFor(`0x${"07".repeat(32)}`, "09".repeat(32).toUpperCase()),
+    "50a630b83f3b4e9c444265cc6af2a094bff7e3848a334f0167fb549d6ca7ee52",
+  );
+});
+
+test("commitmentFor rejects inputs that are not 32 bytes", () => {
+  assert.throws(() => commitmentFor("07", "09".repeat(32)), /trace hash/);
+  assert.throws(() => commitmentFor("07".repeat(32), "abc"), /salt/);
+});
+
+test("newSalt returns 32 random bytes as hex", () => {
+  const a = newSalt();
+  const b = newSalt();
+  assert.match(a, /^[0-9a-f]{64}$/);
+  assert.notEqual(a, b);
 });
