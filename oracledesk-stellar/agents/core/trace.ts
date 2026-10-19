@@ -9,7 +9,7 @@
  * way regardless of how it was constructed or serialized upstream.
  */
 
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 
 export type AgentRole = "market-maker" | "trader";
 
@@ -89,4 +89,43 @@ export class LocalTraceStore implements TraceStore {
     // production TraceStore (pinning to IPFS) returns a real CID here.
     return { cid: `local://${path}` };
   }
+}
+
+// ─── Commit-reveal (#51) ─────────────────────────────────────────────────────
+
+/**
+ * Domain tag for trace commitments. Must match `COMMIT_DOMAIN_TAG` in
+ * contracts/reasoning-registry/src/lib.rs byte-for-byte; the shared golden
+ * vector in trace.test.ts and the Rust tests keeps the two from drifting.
+ */
+export const COMMIT_DOMAIN_TAG = "oracledesk.trace.commit.v1";
+
+function hex32(value: string, name: string): Buffer {
+  const normalized = value.toLowerCase().replace(/^0x/, "");
+  if (!/^[0-9a-f]{64}$/.test(normalized)) {
+    throw new Error(`${name} must be 32 bytes of hex`);
+  }
+  return Buffer.from(normalized, "hex");
+}
+
+/**
+ * Commitment the agent records before acting:
+ * `sha256(COMMIT_DOMAIN_TAG || trace_hash || salt)`, as lowercase hex. It
+ * fixes the trace content without revealing it until `reveal_trace`.
+ */
+export function commitmentFor(hashHex: string, saltHex: string): string {
+  return createHash("sha256")
+    .update(Buffer.from(COMMIT_DOMAIN_TAG, "utf8"))
+    .update(hex32(hashHex, "trace hash"))
+    .update(hex32(saltHex, "salt"))
+    .digest("hex");
+}
+
+/**
+ * A fresh 32-byte random salt (hex). It must be random and full-length: a
+ * short or predictable salt lets anyone brute-force the trace hash from
+ * known trace templates. Keep it — losing it makes the reveal impossible.
+ */
+export function newSalt(): string {
+  return randomBytes(32).toString("hex");
 }
