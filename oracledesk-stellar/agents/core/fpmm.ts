@@ -2,8 +2,8 @@
  * TypeScript/BigInt mirror of contracts/market-core/src/math.rs and
  * model/fpmm_model.py. Kept in lockstep with both by hand; fpmm.test.ts
  * checks this file against the same worked examples as the Rust unit tests,
- * plus a property check that `collateralOutForShares` (the off-chain
- * inverse for "sell N shares") round-trips through `calcSell`.
+ * plus a property check that `collateralOutForShares` (the off-chain inverse
+ * for "sell N shares") round-trips through `calcSell`.
  *
  * All amounts are non-negative bigints in collateral base units (USDC on
  * Stellar = 7 decimals). Rounding always favours the pool, matching the
@@ -11,7 +11,7 @@
  */
 
 export const BPS = 10_000n
-export const MAX_SETS = 1_000_000_000_000_000n; // 1e15 = 100M USDC (7 dp)
+export const MAX_SETS = 1_000_000_000_000_000_000n// 1e15 = 100M USDC (7 dp)
 export const MIN_PROB_BPS = 100n// 1%
 export const MAX_PROB_BPS = 9_900n; // 99%
 
@@ -51,7 +51,7 @@ export function seedReserves(seed: bigint, yesBps: bigint): SeedReserves {
   let reserveNo: bigint;
   if (p >= BPS / 2n) {
     reserveYes = mulDivFloor(seed, BPS - p, p);
-    reserveNo= seed;
+    reserveNo = seed;
   } else {
     reserveYes = seed;
     reserveNo = mulDivFloor(seed, p, BPS - p);
@@ -121,12 +121,12 @@ export function settleValue(kind: Settlement, yes: bigint, no: bigint): bigint {
 }
 
 /**
- * Maximum number of complete sets a holder can merge back to collateral:
- * the smaller of their YES and NO balances. Mirrors math.rs::merge_max and
- * the on-chain `quote_merge_max` view. Used by frontends to offer "merge all".
+ * Maximum complete sets a holder can merge: `min(yes, no)`. Mirrors
+ * math.rs::merge_max and model/fpmm_model.py::merge_max. Negative inputs
+ * are clamped to zero so the result is always non-negative.
  */
 export function mergeMax(yes: bigint, no: bigint): bigint {
-  if (yes < 0n || no < 0n) throw new MathError("invalid input");
+  if (yes < 0n || no < 0n) return 0n;
   return yes < no ? yes : no;
 }
 
@@ -223,7 +223,7 @@ export function priceAfterSell(takenIsYes: boolean, quote: SellQuote): bigint {
  * (fees included) is at most `limitBps` per share. Compared by
  * cross-multiplication so rounding cannot flip the decision; exact
  * equality passes. Mirrors math.rs::buyWithinLimit / the on-chain
- * `buy_v2` limit check.
+ * `buy_v2` imit check.
  */
 export function buyWithinLimit(collateralIn: bigint, sharesOut: bigint, limitBps: bigint): boolean {
   if (collateralIn < 0n || sharesOut <= 0n) throw new MathError("invalid input");

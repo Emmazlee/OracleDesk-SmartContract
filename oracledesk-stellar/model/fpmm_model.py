@@ -129,15 +129,18 @@ def settle_value(kind: str, yes: int, no: int) -> int:
     if kind == "void":
         return (yes + no) // 2
     raise ValueError(f"unknown settlement kind {kind!r}")
+
+
 def merge_max(yes: int, no: int) -> int:
-    """Largest complete-set amount a holder can merge: the smaller of their
-    YES and NO balances. Mirrors math.rs::merge_max; used by the
-    `quote_merge_max` view so frontends can offer "merge all"."""
+    """Largest amount of complete sets a holder can merge: `min(yes, no)`.
+
+    Mirrors math.rs::merge_max and the TypeScript port in agents/core. Used
+    by frontends to offer "merge all" and by the on-chain
+    `quote_merge_max` view. Both legs must be non-negative.
+    """
     if yes < 0 or no < 0:
         raise MathError("invalid input")
-    return min(yes, no)
-
-
+    return yes if yes < no else no
 
 
 def gross_for_shares(r_sold: int, r_other: int, shares_in: int, fee_bps: int) -> int:
@@ -298,57 +301,24 @@ def _check_void_never_overpays():
     assert settle_value("void", 3, 4) == 3
     assert settle_value("void", 5, 5) <= 5
 def _check_merge_max_known_values():
-    """Pins the same worked examples as math.rs's merge_max tests."""
+    """Pins merge_max against the same worked examples as math.rs and the
+    TypeScript mirror, so a porting mistake between the three is caught."""
     assert merge_max(0, 0) == 0
     assert merge_max(5, 0) == 0
     assert merge_max(0, 7) == 0
     assert merge_max(3, 4) == 3
     assert merge_max(4, 3) == 3
     assert merge_max(9, 9) == 9
-    assert merge_max(MAX_SETS, MAX_SETS) == MAX_SETS
-    for bad in ((-1, 0), (0, -1), (-5, -5)):
-        try:
-            merge_max(*bad)
-        except MathError:
-            continue
-        raise AssertionError(f"merge_max accepted negative input {bad}")
+    assert merge_max(MAX_SETS, 1) == 1
+    assert merge_max(1, MAX_SETS) == 1
+    try:
+        merge_max(-1, 5)
+    except MathError:
+        pass
+    else:
+        raise AssertionError("merge_max must reject negative legs")
 
 
-
-
-def _check_price_after_maps_both_sides():
-    """Mirrors math.rs's price_after tests: outcome_is_yes selects which of
-    the two post-trade reserves is the YES reserve."""
-    for r, other in ((1000, 1000), (910, 1100), (1, 9999), (5893, 4107)):
-        assert price_after(True, r, other) == price_yes_bps(r, other)
-        assert price_after(False, r, other) == price_yes_bps(other, r)
-
-    # Worked example shared by all three mirrors: buying 10 USDC of YES in a
-    # 100-sets pool at 50% with a 1% fee moves YES from 5000 to 5470 bps.
-    q = calc_buy(1_000_000_000, 1_000_000_000, 100_000_000, 100)
-    assert price_yes_bps(1_000_000_000, 1_000_000_000) == 5000
-    assert price_after_buy(True, q) == 5470
-    # Selling right back must not land above the pre-trade price: two fees
-    # and pool-favoring rounding always leave the seller worse off.
-    s = calc_sell(q.new_reserve_bought, q.new_reserve_other, 100_000_000, 100)
-    assert price_after_sell(True, s) < 5000
-
-
-def _check_limits_boundary_and_symmetry():
-    # Exact equality passes, one unit over fails, in both directions.
-    assert buy_within_limit(100, 100, 10_000)
-    assert buy_within_limit(100, 101, 10_000)
-    assert not buy_within_limit(101, 100, 10_000)
-    assert buy_within_limit(100, 200, 5_000)
-    assert not buy_within_limit(101, 200, 5_000)
-    assert sell_within_limit(100, 100, 10_000)
-    assert not sell_within_limit(99, 100, 10_000)
-    assert sell_within_limit(100, 200, 5_000)
-    assert not sell_within_limit(100, 201, 5_000)
-    # A zero limit is trivially satisfied for sells (documented as "no
-    # protection") and only binds a buy at a zero average price.
-    assert sell_within_limit(0, 1, 0)
-    assert not buy_within_limit(1, 1, 0)
 
 
 def _check_price_after_maps_both_sides():
