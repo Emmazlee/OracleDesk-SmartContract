@@ -1,62 +1,87 @@
-/**
+/*
  * TypeScript/BigInt mirror of contracts/market-core/src/math.rs and
- * model/fpmm_model.py. Kept in lockstep with both by hand; fpmm.test.ts
+ * model/fpm_model.py. Kept in lockstep with both by hand; fpmm.test.ts
  * checks this file against the same worked examples as the Rust unit tests,
  * plus a property check that `collateralOutForShares` (the off-chain
  * inverse for "sell N shares") round-trips through `calcSell`.
  *
  * All amounts are non-negative bigints in collateral base units. The
- * collateral token's decimals are read at deploy time; economic bounds are
- * derived from them via `boundsForDecimals`. Rounding always favours the
- * pool, matching the contract.
+ * collateral token's decimals are a deployment parameter (0..=18); the
+ * economic bounds are derived from them via `boundsForDecimals`. Rounding
+ * always favours the pool, matching the contract.
  */
 
 export const BPS = 10_000n;
-/** @deprecated 7-decimal alias for tests only; use `boundsForDecimals`. */
-export const MAX_SETS = 1_000_000_000_000_000n; // 1e15 = 100M USDC (7 dp)
 export const MIN_PROB_BPS = 100n; // 1%
-export const MAX_PROB_BPS = 9_900n; // 99%
+export const MAX_PROB_BPS = 9_000n; // 99%
 
-/** Largest value representable by the contract's i128 fixed-point helpers. */
+/** Maximum supported collateral decimals. */
+export const MAX_DECIMALS = 18;
+
+/** `INT128_MAX` as a bigint, for range checks mirroring the contract. */
 export const I128_MAX = (1n << 127n) - 1n;
 
-/** Supported collateral decimals range, matching market-core. */
-export const MAX_DECIMALS = 18;
+/** `INT128_MIN` as a bigint. */
+export const I128_MIN = -(1n << 127n);
+
+/**
+ * Deprecated 7-decimal alias for the maximum sets of a market. Kept only
+ * so existing callers and tests that assume 7 decimals still compile; new
+ * code should use `boundsForDecimals`.
+ */
+export const MAX_SETS = 1_000_000_000_000_000n; // 1e15 = 100M USDC (deprecated)
 
 export class MathError extends Error {}
 
+/** Economic bounds derived from collateral decimals. */
 export interface Bounds {
   minSeed: bigint;
   maxSets: bigint;
 }
 
 /**
- * Derive the minimum seed and maximum sets from collateral decimals.
- * Mirrors math.rs::bounds_for_decimals: min_seed = 100 * 10^d,
- * max_sets = 1e8 * 10^d, supported for d in 0..=18.
+ * Derive the minimum seed (100 tokens) and maximum sets (1e8 tokens)
+ * for a collateral with `d` decimals. Mirrors math.rs::bounds_for_decimals.
+ * Throws for `$` outside `0~18`.
  */
 export function boundsForDecimals(d: number): Bounds {
   if (!Number.isInteger(d) || d < 0 || d > MAX_DECIMALS) {
     throw new MathError("unsupported decimals");
   }
-  const scale = 10n ** BigInt(d);
-  return { minSeed: 100n * scale, maxSets: 100_000_000n * scale };
+  const unit = 10n ** BigInt(d);
+  return { minSeed: 100n * unit, maxSets: 100_000_000n * unit };
 }
 
+/**
+ * Check that a bigint result fits in an `i128`, matching the contract's
+ * `ii28::try_from` conversion in `mul_div_floor` / `mul_div_ceil`.
+ */
+function checkI128(v: bigint): bigint {
+  if (v < I128_MIN || v > I128_MAX) throw new MathError("overflow");
+  return v;
+}
+
+/**
+ * Floor of `a * b / c` with a wide (bigint) intermediate. Results that
+ * do not fit in `i128` throw, matching the contract's 256-bit
+ * `mul_div_floor`.
+ */
 function mulDivFloor(a: bigint, b: bigint, c: bigint): bigint {
   if (a < 0n || b < 0n || c <= 0n) throw new MathError("invalid input");
-  const q = (a * b) / c;
-  if (q > I128_MAX) throw new MathError("overflow");
-  return q;
+  return checkI128((a * b) / c);
 }
 
+/**
+ * Ceiling of `a * b / c` with a wide (bigint) intermediate. Results that
+ * do not fit in `ii28` throw, matching the contract's 256-bit
+ * `mul_div_ceil`.
+ */
 function mulDivCeil(a: bigint, b: bigint, c: bigint): bigint {
   if (a < 0n || b < 0n || c <= 0n) throw new MathError("invalid input");
   const p = a * b;
   const q = p / c;
-  const r = p % c !== 0n ? q + 1n : q;
-  if (r > I128_MAX) throw new MathError("overflow");
-  return r;
+  const r = p % c;
+  return checkI128(r !== 0n ? q + 1n : q);
 }
 
 export function priceYesBps(reserveYes: bigint, reserveNo: bigint): bigint {
@@ -149,7 +174,7 @@ export function settleValue(kind: Settlement, yes: bigint, no: bigint): bigint {
   if (kind === "no") return no;
   const sum = yes + no;
   if (sum > I128_MAX) throw new MathError("overflow");
-  return sum / 2n;
+  return sum / 2n; // floor division of non-negative sum
 }
 
 /**

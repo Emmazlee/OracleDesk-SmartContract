@@ -17,26 +17,18 @@ natively unit-testable and mirrored line-for-line in
 [`model/fpmm_model.py`](../model/fpmm_model.py) and
 `agents/core/fpmm.ts` for property testing and off-chain quoting.
 
-The collateral token's `decimals()` is read once in the constructor and
-stored in instance storage (`DataKey::Decimals`), supporting `0 ..= 18`.
-It is exposed through `Config.decimals` and a dedicated view. The economic
-bounds are derived from it (`math::bounds_for_decimals`):
-`min_seed = 100 * 10^d` and `max_sets = 1e8 * 10^d`. The derived bounds
-replace the old hardcoded 7-decimal `MIN_SEED` / `MAX_SETS` constants in
-contract logic. At 18 decimals `max_sets` is `1e26`, so products of two
-quantities reach `1e52` — beyond `ii28`. That is why `mul_div_floor` /
-`mul_div_ceil` use 256-bit intermediates (a small no_std `u128x2`
-widening multiply and divide inside `math.rs`), so a result that fits in
-`ii28` is always returned exactly and correctness no longer depends on a
-1e30 headroom argument. Rounding directions are unchanged. The Python and
-TypeScript mirrors also expose `bounds_for_decimals` / `boundsForDecimals`
-and assert that results fit `i128`, so off-chain quotes fail where the
-contract would.
-
-Sums of shares and reserves stay far below `i128::MAX` at the maximum
-supported decimals (`max_sets = 1e26`); `settle_value` uses checked
-addition anyway and propagates the error through `redeem` /
-`claim_pool_remainder`.
+**Collateral decimals.** `market-core` reads the collateral token's
+`decimals()` once in `__constructor` (rejecting anything above 18 with
+`UnsupportedDecimals`) and stores it under `DataKey::Decimals`; it is
+exposed through `get_config().decimals`. The economic bounds are derived
+from it rather than hardcoded: `min_seed = 100 * 10^d` and
+`max_sets = 1e8 * 10^d` (`math::bounds_for_decimals`), so a 7-decimal
+Classic asset and an 18-decimal Soroban token both get sensible floors and
+market caps. `mul_div_floor` / `mul_div_ceil` use 256-bit intermediates
+(`math::wide`, a no_std `u128x2` widening multiply and divide), so a
+result that fits in `i128` is always returned exactly regardless of
+decimals. The Python and TypeScript mirrors implement the same bounds and
+reject results beyond `i128`, so off-chain quotes agree with the contract.
 
 **Solvency invariant** (holds after every state transition — see the test
 suite for the ones exercised): the contract's own SEP-41 token balance for a
@@ -57,7 +49,7 @@ portion accumulates in a `LpFees(market_id)` side entry, claimable any time
 (before finality too) via `claim_lp_fees`, and also drained by
 `claim_pool_remainder`. Markets created before this change have no
 `FeeTerms` entry and fall back to the old behavior: recipient = whatever
-`DataKey::Treasury` retains at sweep time, `protocol_share_bps = 10_000` —
+`DataKey::Treasury` holds at sweep time, `protocol_share_bps = 10_000` —
 fully backward compatible, no migration transaction needed. The separate
 LP balance (rather than adding fees to the reserves) is deliberate: it does
 not move `k` or the price and maps directly onto the per-LP fee accumulator
@@ -67,7 +59,7 @@ of the future multi-LP design ([wave-issue 02](wave-issues/02-multi-lp-liquidity
 share-count slippage parameters:
 
 - *Deadline + limit price* (#12): `buy_v2` / `sell_v2` take a
-  `deadline` (ledger **(timestamp**, unix seconds) checked before anything
+  `deadline` (ledger **timestamp**, unix seconds) checked before anything
   else, and a `limit_price_bps` bounding the **average execution price**
   (`collateral_in / shares_out` for buys, `collateral_out / shares_in` for
   sells, fee included, compared by cross-multiplication). `0` means "no
@@ -80,8 +72,8 @@ share-count slippage parameters:
   cover the whole band). `max_impact_bps` bounds a single trade's
   |post − pre| YES-price move (`>` — a trade moving exactly the cap
   passes); `band_bps` bounds |post − ledger-open price|, with the reference
-  stored in short-TTL **(temporary** storage keyed by ledger sequence, so
-  it resets by itself every ledger. 0 disables either check; legacy markets
+  stored in short-TTL **temporary** storage keyed by ledger sequence, so it
+  resets by itself every ledger. 0 disables either check; legacy markets
   have no config and are unaffected. Breaker trips revert with
   `PriceImpactTooHigh` / `PriceBandExceeded` and — because Soroban rolls
   back an invocation's events on `Err` — emit **no** event (the error codes
@@ -91,7 +83,8 @@ share-count slippage parameters:
   *Worst-case lock cost.* The band cannot be ratcheted: the reference is
   the ledger-open price, so an attacker who pushes the price to the band
   edge only blocks further trades for the rest of that ledger (~5 s) —
-  and pays the trading fee plus price impact to do it, which arbitrageurs take back the next ledger. The breakers cannot lock a market across
+  and pays the trading fee plus price impact to do it, which arbitrageurs
+  can take back the next ledger. The breakers cannot lock a market across
   ledgers by construction.
 
 **Transferability.** `transfer_position(from, to, market_id, outcome,
@@ -103,15 +96,25 @@ address (they could never be redeemed) and over-transfers, and emitting
 new_creator)` (current-creator auth, until `lp_claimed`) moves the single
 LP role — the right to `claim_pool_remainder` and `claim_lp_fees` — and
 emits `LpTransferred`. Both preserve the solvency invariant by
-construction; the position mapping is unchanged down to the "remove zero entries" rule.
+construction; the position mapping is unchanged down to the "remove
+zero entries" rule.
 
 **Resolution commitment**: `resolution_hash` is fixed at `create_market`
 time — see [ADR 0001](adr/0001-resolution-commitment.md) for why.
 
+**Market size bound.** A market's `sets_minted` is capped at
+`max_sets = 1e8 * 10^decimals` (checked on `create_market`'s seed and on
+every `buy`); with 18 decimals that is `1e26` raw units. Sums of two such
+quantities stay far below `i128::MAX`, and the multiply-divide helpers no
+longer rely on that headroom because they widen to 256 bits internally.
+Products of two such quantities reach `1e52`, which exceeds `i128::MAX`;
+that is exactly why `mul_div_floor` / `mul_div_ceil` widen to 256-bit
+intermediates rather than depending on the old `1e30` headroom argument.
+
 Lifecycle: `create_market` → `buy`/`sell` (while open; `buy_v2`/`sell_v2`
 with bounds) → `resolve` or `void_market` (resolver-only) → `redeem` per
 holder, `claim_pool_remainder` for the creator/LP, `sweep_fees`
-(permissionless) to the snapshoted fee recipient. Positions and LP
+(permissionless) to the snapshotted fee recipient. Positions and LP
 ownership can change hands at any point via `transfer_position` /
 `transfer_lp`.
 
@@ -122,20 +125,79 @@ Independent resolution modes, all ultimately calling
 
 - **PriceThreshold**: reads a [Reflector](https://reflector.network) SEP-40
   price feed at (or after) the market's `close_time`, compares to a
-  threshold, enforces a max staleness window.
-- **Attested**: m-of-n signer votes; once `threshold` signers agree, a
+  threshold, enforces a max staleness window. Anyone may first pin that
+  read with `snapshot_price` (see "Oracle history retention" below).
+- **Attested**: m-of-n signer votes on a resolver-local
+  `AttestedOutcome { Yes, No, Invalid }`; once `threshold` signers agree, a
   dispute window opens; anyone can finalize after it elapses, or a guardian
   (the resolver's `admin`) can `cancel_proposal` during the window.
+  Finalizing `Yes`/`No` calls market-core's `resolve`; finalizing `Invalid`
+  calls `void_market` (every share redeems at 0.5) and emits
+  `CommitteeVoided`, so signers who agree a question is unanswerable no
+  longer need the guardian to void it. market-core's `Outcome` is
+  unchanged. Each outcome has its own counter and signers are deduplicated
+  per `(outcome, signer)`; the first outcome to reach threshold is
+  proposed and later `Yes`/`No` quorums never move it, except that an
+  `Invalid` quorum replaces a pending `Yes`/`No` proposal and restarts the
+  dispute window. `attest` requires `close_time` to have passed, which is
+  what keeps a committee void (market-core's `void_market` has no close-time
+  guard) from happening early. Proposals and finalizations emit
+  `ResolutionProposedV2` / `ResolutionFinalizedV2` (carrying
+  `AttestedOutcome`); the old `Outcome`-typed events are no longer
+  emitted. Storage keys are versioned (`AttestationV2`, `CountV2`,
+  `ProposalV2`); see ADR 0003 for the redeploy runbook and the legacy-key
+  fallback.
 - **Weighted keys**: a committee of raw Ed25519 public keys with weights.
   Members sign a domain-separated message off-chain and anyone submits the
   signatures to `submit_signatures` in one transaction; the weight threshold
   starts the same dispute window. `cancel_proposal` moves the market to a new
   round, invalidating earlier signatures. Message format: ADR 0001.
+- **Committee with time-locked key rotation** (#35): binds resolution to a
+  reusable committee registry rather than raw addresses. The admin can propose
+  membership and threshold rotations with a mandatory delay (`rotation_delay >= 86_400`).
+  Markets commit to `(committee_id, min_epoch, max_rotation_delta, dispute_window)`.
+  Votes are checked and recounted against the committee members active at the current epoch.
+- **Hybrid (price feed with attested fallback)** (#36): commits to a Reflector
+  price rule and a fallback signer set. If the oracle feed fails or is unavailable
+  after `close_time + fallback_delay`, anyone can call `open_fallback(market_id)` to
+  allow fallback signers to propose and attest. If a valid price report arrives before
+  the fallback dispute window closes, `resolve_price` immediately supersedes the proposal
+  and resolves the market.
 
-Neither mode can be configured until the revealed spec's hash matches the
-market's commitment (`register_price_spec` / `register_signer_spec` — see
-ADR  0001). A guardian can also `guardian_void_market` an unresolvable
-market directly.
+None of these modes can be configured until the revealed spec's hash matches the
+market's commitment (`register_price_spec`, `register_signer_spec`,
+`register_committee_spec`, or `register_hybrid_spec` — see ADR 0001).
+A guardian can also `guardian_void_market` an unresolvable market directly,
+subject to time windows and typed audit reasons.
+
+#### Oracle history retention
+
+SEP-40 oracles, Reflector included, keep a bounded history: records are
+published at a fixed cadence (the feed's `resolution()`) and only a fixed
+number of recent ones are retained, so `price(asset, timestamp)` returns
+`None` once `timestamp` falls outside that window. Look the current values
+up from Reflector's documentation or the feed contract itself; do not
+assume them. A price market nobody resolves before its `close_time` record
+ages out would otherwise return `PriceUnavailable` forever and could only be
+voided.
+
+`snapshot_price(market_id, caller)` closes that gap. Anyone may call it
+after `close_time` while the market is unresolved; it reads the committed
+feed exactly as resolution does, validates it with the same rule
+(`validate_price`: not after close, no older than `max_staleness`), and
+stores it as a `PriceSnapshot`. An invalid read is never stored, and the
+first valid snapshot wins (`SnapshotExists`): the answer for a fixed
+`(asset, close_time)` is deterministic, so this deliberately prefers
+determinism over an oracle later rewriting history. Every price path
+(`resolve_price`, `expire_market`, `open_fallback`, and the guardian's
+`OracleUnavailable` check) uses a stored snapshot before the live feed and
+then skips the oracle call. `PriceResolutionV2` adds `from_snapshot`; the
+original `PriceResolution` is still emitted alongside it for one release.
+
+Operators and agents should call `snapshot_price` within one oracle period
+of `close_time` (CLI: `stellar contract invoke --id $RESOLVER -- snapshot_price
+--market_id <id> --caller <address>`). A late snapshot is still accepted as
+long as the oracle has the record.
 
 #### Bonded disputes (`SignersDisputable`)
 
@@ -143,12 +205,12 @@ A `SignersDisputable` spec adds an optimistic challenge to Attested mode.
 While a proposal's dispute window is open, anyone can `dispute` it by
 escrowing `dispute_bond` of the collateral token in the resolver. That
 freezes `finalize_signers`, `attest`, `cancel_proposal` and `expire_market`
-dispute active (`DisputeActive`) and escalates to the authority committed in the spec: the
+(`DisputeActive`) and escalates to the authority committed in the spec: the
 guardian (`settle_dispute`) or a `k`-of-`n` committee disjoint from the
 signers (`escalation_attest`). Upholding the proposal resolves to it and
 forfeits the bond to market-core's treasury; any other ruling resolves to the
 verdict (or voids for `Invalid`) and returns the bond. If nobody rules within
-escalation timeout of the dispute, anyone may `expire_dispute`: the market is
+`escalation_timeout` of the dispute, anyone may `expire_dispute`: the market is
 voided and the bond refunded. `guardian_void_market` during a dispute also
 refunds it. Bonds leave escrow only via the permissionless
 `claim_dispute_bond` (pull, so a payee that cannot receive cannot block
@@ -178,30 +240,179 @@ call `expire_market`, which resolves the market if it still can be (valid
 price feed) and otherwise voids it through market-core, so collateral is never
 locked behind a missing reveal or a silent committee. See ADR 0001.
 
+#### Attestation evidence linking (`reasoning-registry`)
+
+Attestation votes can be bound to cryptographic traces recorded in `reasoning-registry`.
+When configured via `set_evidence_config(min_policy, registry)`:
+- Signers call `attest_with_evidence` citing `(trace_hash, reasoning_hash)`.
+- The resolver queries `reasoning-registry` via cross-contract call to confirm that
+  the trace has been published and satisfies `EvidencePolicy` (e.g. `RawBytes` vs `ReasoningBounded`).
+- Each `trace_hash` can only be cited once per market (`EvidenceUsed` prevents replay).
+- An audit trail of cited traces is preserved on-chain (`evidence_count`, `evidence_at`).
+
+#### Constrained guardian powers and audit trail
+
+To limit administrative discretion:
+- **Dispute window bounds**: `cancel_proposal` can only be executed while a dispute window
+  is actively open (`DisputeWindowClosed` error if closed).
+- **Grace periods for voiding**: `guardian_void_market` cannot void arbitrarily; it requires
+  `close_time + REVEAL_GRACE_SECS` (3 days) for unrevealed specs, `close_time + ORACLE_GRACE_SECS`
+  (1 day) for failing price feeds, and `close_time + SIGNER_GRACE_SECS` (7 days) for unresponsive
+  signers (`GracePeriodNotElapsed` error if called early).
+- **Rate limiting**: `MAX_CANCELS_PER_MARKET = 2` prevents infinite cancellation griefing.
+- **Audit trail**: Every guardian cancellation or void requires a typed `GuardianReason`
+  (`StaleOracleFeed`, `CompromisedSigner`, `AmbiguousSpec`, `LivenessFailure`, `Other`),
+  and emits a `GuardianAction` event with full contextual metadata.
+
 The resolver never depends on `market-core`'s Rust crate — see
 [ADR 0002](adr/0002-cross-contract-calls.md) for why, and what that trades
-off. The vendored `market_core.wasm` fixture is refreshed whenever
-market-core changes.
+off.
 
 ### treasury
 
 Holds the agents' pooled USDC and is the *only* path that spends it: an
 agent calls `agent_create_market` / `agent_buy` / `agent_sell` /
-`agent_buy_v2` / `agent_sell_v2`, the treasury checks its own
-per-trade/per-market/daily caps, then calls `market-core` itself as the
-trader/creator. This means the caps are a real on-chain limit on what the
+`agent_buy_v2` / `agent_sell_v2` (always naming itself as the first
+`agent` argument), the treasury checks the agent's role and its own
+per-trade/per-market/daily caps plus the price limits, then calls
+`market-core` itself as the trader/creator. This means the caps are a real on-chain limit on what the
 automated agent can deploy — an agent's own key calling `market-core`
 directly would just be trading its own separate funds, not bypassing a cap
 on the treasury's money. The `*_v2` twins forward the same caps plus
 market-core's deadline / limit-price bounds, so a revert from either layer
-laves the caps unchanged (the whole invocation is atomic). The treasury's
+leaves the caps unchanged (the whole invocation is atomic).
+
+**Agents.** The treasury keeps a registry of up to `MAX_AGENTS = 16` agents,
+each with an `AgentPolicy { roles, max_trade, max_daily, active }`. Roles are
+a bitmask: `ROLE_CREATE` (`agent_create_market`), `ROLE_TRADE` (`agent_buy`,
+`agent_sell` and their `_v2` twins) and `ROLE_SETTLE` (`redeem`,
+`claim_pool_remainder`, `close_trade`, `agent_claim_lp_fees`, the `legacy_*`
+recovery calls). The constructor registers its `agent` with every role and
+the global caps; `scripts/deploy-testnet.sh` then proposes a separate maker
+(`CREATE | SETTLE`) and trader (`TRADE | SETTLE`), so a leaked trader key
+cannot create markets and a runaway trader cannot spend the maker's budget.
+An agent's `max_trade` and `max_daily` sit under the global caps; both levels
+are checked on every spend, and each agent has its own sliding daily window
+(`agent_daily_usage`). `TradeAuthorized.agent` names the acting agent.
+Positions are still pooled: market-core only ever sees the treasury, so the
+per-agent state is usage, not ownership. `remove_agent` deactivates at once
+(usage history kept), but at least one active `ROLE_SETTLE` agent must always
+remain so open positions can be settled. Narrowing an active agent's policy
+applies at once; adding, reactivating or widening one goes through the
+timelock below (`set_agent` → `execute_agent` after `config_delay`).
+`get_config()` survives as a deprecated view in the old `RiskConfig` shape,
+whose `agent` is the first registered agent; a stored pre-registry config is
+migrated lazily into `GlobalConfig` plus one full-role agent.
+
+**Caps.** Four limits apply to every buy and market creation:
+
+- `max_trade`: per call.
+- `max_market`: lifetime capital ever committed to one market. Never freed,
+  not by sells, redemptions or `close_trade`.
+- `max_daily`: a **sliding** 24h limit. Usage is kept in 25 hourly buckets
+  (`UsageWindow`, instance storage); a trade at hour `h` is accepted only if
+  buckets `h-24 ..= h` plus the trade stay within `max_daily`. Every real
+  24h interval falls inside those 25 hours, so no trailing 24h ever exceeds
+  the cap. The rounding is conservative: a trade keeps counting for 24-25h.
+  (The previous fixed window reset lazily, so `max_daily` could be spent
+  just before a reset and again just after it.) `daily_usage()` keeps its
+  `DailyUsage` shape (`day_start` is now the start of the oldest counted
+  hour) and is side-effect free; `daily_usage_detail()` returns the buckets
+  and `daily_headroom()` the remaining allowance.
+- `max_net_exposure`: capital *currently* deployed across all markets. The
+  treasury records collateral in (buys, creations) and out (sells,
+  redemptions, pool remainders, LP fee claims) per market (`NetPosition`)
+  and keeps a running `net_exposure() = sum(max(0, in - out))`. Profit in
+  one market floors at zero and never offsets another. A sell frees net
+  headroom but not lifetime headroom; `close_trade` changes neither;
+  `migrate_market` drops the market from net accounting. Enforcement uses
+  only these local counters (no extra cross-contract call on the hot path)
+  and never a pool price: a spot-valued cap would let anyone pump a price to
+  unlock headroom or crash it to block the agent. `market_valuation(id)`
+  reports `cost_basis`, a manipulation-resistant `floor_value` (complete
+  sets `min(yes, no)` plus `min(reserve_yes, reserve_no)` as unclaimed LP;
+  the settlement value once final), an informational `spot_value`, and
+  `at_risk = max(0, cost_basis - floor_value)`. Net accounting starts when
+  the contract is deployed (missing entries read as zero). The treasury's
 creator-side claims are split the same way the fees are: `collect_market_fees`
 sweeps the **protocol portion** to the treasury, while `agent_claim_lp_fees`
 claims the LP portion for markets the treasury created.
 
-**Migration to a successor treasury.** The treasury has no upgrade path or
-config setters by design, so redeploying it (bug fix, cap change, agent
-rotation) means deploying a new contract. `set_successor(successor)`
+**Price limits.** Size caps do not stop the treasury buying YES at 99% in a
+pool that was at 40% a moment ago (a buggy strategy, a compromised agent key,
+a sandwich). A `PricePolicy { max_buy_price_bps, min_sell_price_bps,
+max_impact_bps, max_slippage_bps }` (defaults 9500 / 500 / 500 / 200) is
+enforced inside every agent trade, using market-core's own `get_price` so the
+rounding matches what clients see:
+
+- buys need the outcome's spot price `<= max_buy_price_bps`, sells need it
+  `>= min_sell_price_bps`; `agent_create_market` needs `initial_yes_bps`
+  within `[min_sell, max_buy]`;
+- `min_shares_out` is raised to the same-transaction `quote_buy` minus
+  `max_slippage_bps` (never below 1), and `max_shares_in` is capped at
+  `quote_sell` plus `max_slippage_bps` (rounded up);
+- after the trade, `|p_after - p_before| <= max_impact_bps`.
+
+Because the quote runs against the same pool state as the trade, the quote
+floor only protects the agent's own intent; the band is what stops a
+front-runner (pushing the price out of band fails the trade), and the impact
+limit bounds how far any single trade moves the pool. Large trades in thin
+pools are rejected by the impact limit, so strategies must split them;
+`max_trade` and `max_impact_bps` interact. market-core's `SlippageExceeded`
+is remapped to the treasury's own `SlippageExceeded = 27`; other market-core
+errors are re-raised with market-core's codes, which overlap the treasury's
+numerically. The checks add three cross-contract view calls per trade: a
+1 USDC `agent_buy` against a real market-core measured ~3.5M instructions in
+`price_checks_cost_estimate_recorded`.
+
+**Timelocked configuration.** The global caps (`GlobalConfig`: collateral,
+market_core, `max_trade`, `max_market`, `max_daily`, `max_net_exposure`), the
+price policy and agent policies change through propose/execute with
+asymmetric rules: anything that only tightens (lower caps, a narrower band,
+fewer roles) applies immediately; anything that loosens (any raised cap, a
+new or widened agent, a changed collateral or market-core) waits
+`config_delay` (at least one day, set at construction, can only grow via
+`set_config_delay`) and is announced first by `ConfigProposed` /
+`AgentPolicyProposed` / `PricePolicyProposed`. A proposal that lowers one
+value and raises another is a loosening as a whole; split it to apply the
+tightening at once. Execution (`execute_config`, `execute_agent`,
+`execute_price_policy`) is permissionless once due, so it never depends on the
+admin; `cancel_*` is admin-only. A tightening applied while a loosening is
+pending leaves that proposal and its timer as they are. A collateral switch
+is only allowed for an empty treasury (no balance, open markets or queued
+withdrawals). A market-core switch leaves positions in the old core where they
+are: the old core is recorded as legacy, `legacy_redeem` /
+`legacy_claim_pool_remainder` recover them, and exposure for any later core
+is kept under keys namespaced by core address (the original core keeps the
+old `Market(id)` / `Net(id)` keys) so restarted market ids cannot collide.
+The new core still needs its own `set_treasury` for fee sweeps. This bounds
+what a compromised admin can unlock *for the agents*; it is not a custody
+control (see "Vault" and SECURITY.md).
+
+**Vault.** Deposits mint internal shares against a conservative NAV and
+withdrawals burn them; there is no admin `withdraw`. `nav() = idle +
+Σ floor(open markets) - queue_reserved`, where an open market's floor is its
+complete sets `min(yes, no)` plus `min(reserve_yes, reserve_no)` for an
+unclaimed LP role, and a final market counts its exact settlement value. The
+directional part of a position is valued at zero, so trading against a pool
+cannot raise NAV. The open-market index walked by `nav()` is bounded at
+`MAX_OPEN_MARKETS = 12` (two market-core reads each; 16 already used ~40 MB
+of the 40 MiB per-transaction memory limit); a buy or creation in a 13th
+market fails with `TooManyOpenMarkets`, and markets leave the index once
+redeemed and claimed. Share math rounds toward the vault and uses a virtual
+offset (1,000 shares / 1 stroop) plus dead shares on the first mint against
+donation-based share inflation; deposits must be at least `MIN_DEPOSIT`
+(10 USDC). `request_withdraw` prices the shares at once, pays what free idle
+collateral allows and queues the remainder as a FIFO ticket;
+`claim_withdraw(ticket)` (permissionless, pays the owner) settles the head
+ticket as capital returns, and agents can never spend `queue_reserved()`.
+While paused, `emergency_withdraw` pays shareholders their pro-rata part of
+free idle collateral without touching market-core. See
+[ADR 0005](adr/0005-treasury-vault.md).
+
+**Migration to a successor treasury.** The treasury has no upgrade path, so
+redeploying it (a bug fix, or anything the timelocked setters above do not
+cover) means deploying a new contract. `set_successor(successor)`
 (admin) records where value may go and emits `SuccessorSet`; then
 `migrate_market(market_id)` (admin, **not** agent) moves the treasury's
 YES/NO position and, if it is still the LP, its LP ownership for one market
@@ -211,10 +422,11 @@ emits `MarketMigrated`. The auth model:
 - The agent has no path: both migration entrypoints are `require_admin`.
 - The destination is fixed to the configured `Successor` — `migrate_market`
   takes no destination argument, so even a compromised agent key cannot
-  redirect value, and a compromised admin gains no new power over *user*
-  funds (it could already `withdraw`; migration only moves
-  treasury-owned positions, and the successor is visible on-chain via
-  `SuccessorSet`).
+  redirect value. It is still an admin power over shareholders' capital:
+  migrated positions leave this treasury's NAV without compensation, so a
+  compromised admin could move them to a successor it controls. The
+  successor is visible on-chain via `SuccessorSet` before any
+  `migrate_market`, and SECURITY.md lists this as a known admin power.
 - The treasury's calls to market-core's `transfer_position` / `transfer_lp`
   are *direct* calls, so market-core's `require_auth` on the treasury's own
   address is satisfied implicitly by the invoker rule — no
@@ -269,6 +481,9 @@ one of the seeded `docs/wave-issues/`.
   (`quote_buy`) immediately before submitting and derives non-zero
   `min_shares_out` / `limit_price_bps` bounds plus a deadline from it.
 - **packages/bindings/**: generated TypeScript clients (`scripts/gen-bindings.sh`).
+  `Config` gained a `decimals` field, so consumers must re-sync their
+  generated bindings after upgrading `market-core`; the XDR shape changed
+  and old bindings will not decode the new `get_config` result.
 
 ## Known limitations (see docs/STATUS.md for the full, current list)
 
