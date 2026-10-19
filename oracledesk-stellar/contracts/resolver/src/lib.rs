@@ -78,6 +78,12 @@ pub const ORACLE_GRACE_SECS: u64 = 86_400;
 pub const SIGNER_GRACE_SECS: u64 = 7 * 86_400;
 /// Maximum number of proposal cancellations per market allowed by the guardian.
 pub const MAX_CANCELS_PER_MARKET: u32 = 2;
+/// Maximum number of feed records a grid lookback may inspect per resolution
+/// attempt (issue #26). Bounds the cross-contract calls: a record older than
+/// `MAX_LOOKBACK_RECORDS * resolution()` is reported `StalePrice` even when
+/// `max_staleness` would still allow it, because resolution is only known at
+/// resolve time and the cap cannot be validated at registration.
+pub const MAX_LOOKBACK_RECORDS: u32 = 12;
 
 #[contracttype]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -622,9 +628,18 @@ pub struct AdminTransferred {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AdminTransferCancelled {}
 
+/// SEP-40 Oracle Consumer interface, as implemented by Reflector feeds.
+/// `decimals` and `resolution` are the feed's fixed-point scale and record
+/// grid; `price` returns a record only for a timestamp exactly on one
+/// (`Option<PriceData>` for a gap or an aged-out query); `lastprice` is the
+/// newest stored observation, used by [`Resolver::preview_price`] for feed
+/// health checks only, never for resolution.
 #[soroban_sdk::contractclient(name = "ReflectorPriceClient")]
 pub trait ReflectorPrice {
+    fn decimals(env: Env) -> u32;
+    fn resolution(env: Env) -> u32;
     fn price(env: Env, asset: OracleAsset, timestamp: u64) -> Option<PriceData>;
+    fn lastprice(env: Env, asset: OracleAsset) -> Option<PriceData>;
 }
 
 #[contract]
@@ -1314,6 +1329,22 @@ impl Resolver {
         env.storage()
             .persistent()
             .get(&DataKey::Snapshot(market_id))
+    }
+
+    /// The feed's newest observation (`lastprice`) for the market's committed
+    /// asset: a read-only health check for keepers before calling
+    /// `resolve_price`. Resolution never consults it (issue #26): a live
+    /// `lastprice` can be fresher than `close_time`, and the historical grid
+    /// lookup is the only settlement source. A trapping feed or a feed with
+    /// no record is `PriceUnavailable`; signer-mode markets are `WrongMode`.
+    pub fn preview_price(env: Env, market_id: u64) -> Result<PriceData, Error> {
+        let config = Self::price_config(&env, market_id)?;
+        let Ok(Ok(Some(data))) =
+            ReflectorPriceClient::new(&env, &config.reflector).try_lastprice(&config.asset)
+        else {
+            return Err(Error::PriceUnavailable);
+        };
+        Ok(data)
     }
 
     /// When `expire_market` becomes callable for `market_id`: `close_time` plus
@@ -2091,13 +2122,18 @@ impl Resolver {
 
     /// The single rule for whether a feed read may settle a market, shared by
     /// `snapshot_price` and every resolution path so a snapshot can never pin
-    /// a price resolution would reject. The place to add further checks (for
-    /// example rejecting `price <= 0`).
+    /// a price resolution would reject. A non-positive price is `InvalidPrice`
+    /// (issue #26): a broken or zeroed feed must never settle a "below" market
+    /// YES, and SEP-40 prices are unsigned fixed-point values whose zero is
+    /// never a valid observation.
     fn validate_price(
         config: &PriceConfig,
         close_time: u64,
         data: &PriceData,
     ) -> Result<(), Error> {
+        if data.price <= 0 {
+            return Err(Error::InvalidPrice);
+        }
         if data.timestamp > close_time || close_time - data.timestamp > config.max_staleness {
             return Err(Error::StalePrice);
         }
@@ -2119,16 +2155,45 @@ impl Resolver {
         }
     }
 
-    /// Reads the committed feed at `close_time` and validates it. A missing
-    /// record or a trapping oracle is `PriceUnavailable`, never a host error.
+    /// Reads the committed feed on its SEP-40 record grid and validates it.
+    /// The lookup timestamp is `close_time` floored to `resolution()`; SEP-40
+    /// feeds only store records on that grid, so querying `close_time` raw
+    /// would miss every off-boundary close (issue #26). If the aligned record
+    /// is missing the lookback walks the grid back in `resolution()` steps
+    /// while the next candidate could still satisfy `max_staleness`, capped
+    /// at [`MAX_LOOKBACK_RECORDS`] cross-contract calls. A trapping oracle or
+    /// a failing `price` call is `PriceUnavailable`, never a host error; a
+    /// grid with no acceptable record is `StalePrice`; a `resolution()` of 0
+    /// is a broken feed and `InvalidPrice` (it would divide by zero).
     fn read_feed(env: &Env, config: &PriceConfig, close_time: u64) -> Result<PriceData, Error> {
-        let Ok(Ok(Some(data))) =
-            ReflectorPriceClient::new(env, &config.reflector).try_price(&config.asset, &close_time)
-        else {
+        let client = ReflectorPriceClient::new(env, &config.reflector);
+        let Ok(Ok(resolution)) = client.try_resolution() else {
             return Err(Error::PriceUnavailable);
         };
-        Self::validate_price(config, close_time, &data)?;
-        Ok(data)
+        if resolution == 0 {
+            return Err(Error::InvalidPrice);
+        }
+        let res = resolution as u64;
+        let mut ts = close_time - close_time % res;
+        let mut inspected = 1u32;
+        loop {
+            match client.try_price(&config.asset, &ts) {
+                Ok(Ok(Some(data))) => {
+                    Self::validate_price(config, close_time, &data)?;
+                    return Ok(data);
+                }
+                Ok(Ok(None)) => {}
+                _ => return Err(Error::PriceUnavailable),
+            }
+            if ts < res
+                || close_time - ts + res > config.max_staleness
+                || inspected >= MAX_LOOKBACK_RECORDS
+            {
+                return Err(Error::StalePrice);
+            }
+            ts -= res;
+            inspected += 1;
+        }
     }
 
     /// The outcome the market's price rule gives, from its stored snapshot
@@ -2527,19 +2592,100 @@ mod test {
         BytesN, IntoVal,
     };
 
+    /// Faithful SEP-40 feed (issue #26), replacing the old `MockReflector`,
+    /// which returned one stored `PriceData` for every asset and timestamp and
+    /// so hid the decimals, grid-alignment and bad-price bugs. This mock:
+    /// stores per-asset histories, reports configurable `decimals()` and
+    /// `resolution()`, returns `Some` from `price(asset, ts)` only on exact
+    /// record timestamps (gaps and off-grid queries are `None`, like
+    /// Reflector), and `lastprice(asset)` gives the newest record.
+    /// `set_panic(true)` makes every entrypoint trap like a broken feed.
     #[contract]
-    struct MockReflector;
+    struct Sep40Mock;
+
+    const MOCK_HISTORY: u32 = 0;
+    const MOCK_DECIMALS: u32 = 1;
+    const MOCK_RESOLUTION: u32 = 2;
+    const MOCK_PANIC: u32 = 3;
 
     #[contractimpl]
-    impl MockReflector {
-        pub fn set_price(env: Env, price: i128, timestamp: u64) {
-            env.storage()
-                .instance()
-                .set(&0u32, &PriceData { price, timestamp });
+    impl Sep40Mock {
+        pub fn set_config(env: Env, decimals: u32, resolution: u32) {
+            env.storage().instance().set(&MOCK_DECIMALS, &decimals);
+            env.storage().instance().set(&MOCK_RESOLUTION, &resolution);
         }
 
-        pub fn price(env: Env, _asset: OracleAsset, _timestamp: u64) -> Option<PriceData> {
-            env.storage().instance().get(&0u32)
+        pub fn set_panic(env: Env, on: bool) {
+            env.storage().instance().set(&MOCK_PANIC, &on);
+        }
+
+        /// Replaces the feed's history for `asset`. Records are only findable
+        /// at their exact timestamps, so a record off the `resolution()` grid
+        /// models a corrupt feed and stays unreachable by the aligned
+        /// lookback.
+        pub fn set_history(env: Env, asset: OracleAsset, history: Vec<PriceData>) {
+            let mut all: soroban_sdk::Map<OracleAsset, Vec<PriceData>> = env
+                .storage()
+                .instance()
+                .get(&MOCK_HISTORY)
+                .unwrap_or_else(|| soroban_sdk::Map::new(&env));
+            all.set(asset, history);
+            env.storage().instance().set(&MOCK_HISTORY, &all);
+        }
+
+        fn guard(env: &Env) {
+            let on: bool = env.storage().instance().get(&MOCK_PANIC).unwrap_or(false);
+            if on {
+                panic!("sep40 mock feed down");
+            }
+        }
+
+        fn records(env: &Env, asset: &OracleAsset) -> Vec<PriceData> {
+            let all: soroban_sdk::Map<OracleAsset, Vec<PriceData>> = env
+                .storage()
+                .instance()
+                .get(&MOCK_HISTORY)
+                .unwrap_or_else(|| soroban_sdk::Map::new(env));
+            all.get(asset.clone())
+                .unwrap_or_else(|| Vec::new(env))
+        }
+
+        /// Defaults to Reflector's public-feed shape: 14 decimals.
+        pub fn decimals(env: Env) -> u32 {
+            Self::guard(&env);
+            env.storage().instance().get(&MOCK_DECIMALS).unwrap_or(14)
+        }
+
+        /// Default 1 s so fixtures written against the old mock keep
+        /// resolving; grid behaviour is set explicitly per test.
+        pub fn resolution(env: Env) -> u32 {
+            Self::guard(&env);
+            env.storage().instance().get(&MOCK_RESOLUTION).unwrap_or(1)
+        }
+
+        /// SEP-40 exactness: `Some` only when `timestamp` names a stored
+        /// record of this asset.
+        pub fn price(env: Env, asset: OracleAsset, timestamp: u64) -> Option<PriceData> {
+            Self::guard(&env);
+            Self::records(&env, &asset)
+                .iter()
+                .find(|record| record.timestamp == timestamp)
+        }
+
+        pub fn lastprice(env: Env, asset: OracleAsset) -> Option<PriceData> {
+            Self::guard(&env);
+            let records = Self::records(&env, &asset);
+            let mut newest: Option<PriceData> = None;
+            for record in records.iter() {
+                let replace = match &newest {
+                    Some(current) => record.timestamp >= current.timestamp,
+                    None => true,
+                };
+                if replace {
+                    newest = Some(record);
+                }
+            }
+            newest
         }
     }
 
@@ -2570,10 +2716,28 @@ mod test {
         })
     }
 
+    /// [`fixture`] with a custom market `close_time`, for grid-alignment tests.
+    fn fixture_at(
+        close_time: u64,
+        spec_fn: impl FnOnce(&Env, &Address, &Address, &Address) -> ResolutionSpec,
+    ) -> Fixture {
+        fixture_close_with(close_time, spec_fn, |env, spec, _market_core| {
+            legacy_spec_hash(env, spec)
+        })
+    }
+
     /// Like [`fixture`], but `commit` chooses the `resolution_hash` the market
     /// is created with, given the rule and the market-core address, so V2
     /// envelopes can be committed to.
     fn fixture_with(
+        spec_fn: impl FnOnce(&Env, &Address, &Address, &Address) -> ResolutionSpec,
+        commit: impl FnOnce(&Env, &ResolutionSpec, &Address) -> BytesN<32>,
+    ) -> Fixture {
+        fixture_close_with(2_000, spec_fn, commit)
+    }
+
+    fn fixture_close_with(
+        close_time: u64,
         spec_fn: impl FnOnce(&Env, &Address, &Address, &Address) -> ResolutionSpec,
         commit: impl FnOnce(&Env, &ResolutionSpec, &Address) -> BytesN<32>,
     ) -> Fixture {
@@ -2588,7 +2752,7 @@ mod test {
         let signer_b = Address::generate(&env);
         let treasury = Address::generate(&env);
         let resolver_id = Address::generate(&env);
-        let reflector_id = env.register(MockReflector, ());
+        let reflector_id = env.register(Sep40Mock, ());
 
         let collateral = env.register_stellar_asset_contract_v2(admin.clone());
         let token = StellarAssetClient::new(&env, &collateral.address());
@@ -2615,7 +2779,7 @@ mod test {
             &resolution_hash,
             &soroban_sdk::String::from_str(&env, "ipfs://resolver-test"),
             &Category::Crypto,
-            &2_000,
+            &close_time,
             &(100 * 10_000_000_i128),
             &5000u32,
         );
@@ -2642,12 +2806,22 @@ mod test {
     }
 
     fn price_spec(env: &Env, reflector: &Address) -> PriceConfig {
+        price_spec_at(env, reflector, 2_000, PriceDirection::Above, 10)
+    }
+
+    fn price_spec_at(
+        env: &Env,
+        reflector: &Address,
+        threshold: i128,
+        direction: PriceDirection,
+        max_staleness: u64,
+    ) -> PriceConfig {
         PriceConfig {
             reflector: reflector.clone(),
             asset: OracleAsset::Other(Symbol::new(env, "XLM")),
-            threshold: 2_000,
-            direction: PriceDirection::Above,
-            max_staleness: 10,
+            threshold,
+            direction,
+            max_staleness,
         }
     }
 
@@ -2698,8 +2872,11 @@ mod test {
     #[test]
     fn price_mode_resolves_from_historical_reflector_price() {
         let f = fixture(|env, reflector, _a, _b| ResolutionSpec::Price(price_spec(env, reflector)));
-        let reflector = MockReflectorClient::new(&f.env, &f.reflector_id);
-        reflector.set_price(&2_500_i128, &1_999_u64);
+        let reflector = Sep40MockClient::new(&f.env, &f.reflector_id);
+        reflector.set_history(
+            &OracleAsset::Other(Symbol::new(&f.env, "XLM")),
+            &Vec::from_array(&f.env, [PriceData { price: 2_500, timestamp: 1_999 }]),
+        );
 
         let ResolutionSpec::Price(spec) = f.spec.clone() else {
             unreachable!()
@@ -2964,7 +3141,13 @@ mod test {
         let ResolutionSpec::Price(spec) = f.spec.clone() else {
             unreachable!()
         };
-        MockReflectorClient::new(&f.env, &f.reflector_id).set_price(&price, &price_timestamp);
+        Sep40MockClient::new(&f.env, &f.reflector_id).set_history(
+            &spec.asset,
+            &Vec::from_array(&f.env, [PriceData {
+                price,
+                timestamp: price_timestamp,
+            }]),
+        );
         f.resolver.register_price_spec(&f.market_id, &spec);
         f
     }
@@ -4440,6 +4623,8 @@ mod test {
 
     /// SEP-40 feed with bounded history: `price(ts)` returns the newest
     /// record at or before `ts`, but only among the last `retention` pushed.
+    /// Models Reflector's retention window (issue #26's snapshots work); the
+    /// record grid is 10 s.
     #[contract]
     struct RetentionReflector;
 
@@ -4457,6 +4642,29 @@ mod test {
 
         pub fn set_retention(env: Env, n: u32) {
             env.storage().instance().set(&1u32, &n);
+        }
+
+        pub fn decimals(env: Env) -> u32 {
+            let _ = env;
+            14
+        }
+
+        pub fn resolution(env: Env) -> u32 {
+            let _ = env;
+            10
+        }
+
+        pub fn lastprice(env: Env, _asset: OracleAsset) -> Option<PriceData> {
+            let history: Vec<PriceData> = env
+                .storage()
+                .instance()
+                .get(&0u32)
+                .unwrap_or(Vec::new(&env));
+            if history.is_empty() {
+                None
+            } else {
+                history.get(history.len() - 1)
+            }
         }
 
         pub fn price(env: Env, _asset: OracleAsset, timestamp: u64) -> Option<PriceData> {
@@ -4574,13 +4782,16 @@ mod test {
     }
 
     #[test]
-    fn resolve_without_snapshot_after_retention_fails_price_unavailable() {
+    fn resolve_without_snapshot_after_retention_fails_stale() {
         let (f, feed) = retention_fixture();
         feed.push(&2_500, &2_000);
         age_out(&feed);
+        // Issue #26: the aligned lookup finds no record on the grid within
+        // `max_staleness`, so exhaustion is `StalePrice` (a live-but-empty
+        // window), not `PriceUnavailable` (which now means a trapping feed).
         assert_eq!(
             f.resolver.try_resolve_price(&f.market_id),
-            Err(Ok(Error::PriceUnavailable))
+            Err(Ok(Error::StalePrice))
         );
     }
 
@@ -4592,7 +4803,7 @@ mod test {
         let caller = Address::generate(&f.env);
         assert_eq!(
             f.resolver.try_snapshot_price(&f.market_id, &caller),
-            Err(Ok(Error::PriceUnavailable))
+            Err(Ok(Error::StalePrice))
         );
         assert_eq!(f.resolver.snapshot(&f.market_id), None);
     }
@@ -4834,6 +5045,366 @@ mod test {
             }])
             .try_cancel_admin_transfer()
             .is_err());
+    }
+
+
+    // ----- SEP-40 grid alignment, bad prices and preview (issue #26) ------
+
+    /// Installs exact-timestamp history on the fixture's `Sep40Mock` for the
+    /// XLM asset that `price_spec_at` commits to.
+    fn feed_history<const N: usize>(f: &Fixture, records: [PriceData; N]) {
+        Sep40MockClient::new(&f.env, &f.reflector_id).set_history(
+            &OracleAsset::Other(Symbol::new(&f.env, "XLM")),
+            &Vec::from_array(&f.env, records),
+        );
+    }
+
+    fn arm_and_resolve(f: &Fixture, spec: &PriceConfig, resolve_at: u64) -> Outcome {
+        f.resolver.register_price_spec(&f.market_id, spec);
+        f.env.ledger().set_timestamp(resolve_at);
+        f.resolver.resolve_price(&f.market_id)
+    }
+
+    #[test]
+    fn price_lookup_aligns_to_resolution_grid() {
+        // close_time 1_000_123 is not on the 300 s grid; a real SEP-40 feed
+        // answers `None` for any off-grid timestamp. The lookup must query
+        // floor(1_000_123 / 300) * 300 = 999_900 (issue #26, bug 2).
+        let f = fixture_at(1_000_123, |env, reflector, _a, _b| {
+            ResolutionSpec::Price(price_spec_at(env, reflector, 2_000, PriceDirection::Above, 300))
+        });
+        let ResolutionSpec::Price(spec) = f.spec.clone() else {
+            unreachable!()
+        };
+        Sep40MockClient::new(&f.env, &f.reflector_id).set_config(&14, &300);
+        feed_history(
+            &f,
+            [PriceData {
+                price: 2_500,
+                timestamp: 999_900,
+            }],
+        );
+        assert_eq!(arm_and_resolve(&f, &spec, 1_000_200), Outcome::Yes);
+        assert_eq!(last_price_resolution(&f).price_timestamp, 999_900);
+    }
+
+    #[test]
+    fn price_lookup_walks_back_within_staleness() {
+        // Grid 300, close 2_000 -> aligned 1_800. Only 1_500 has a record;
+        // it is 500 s stale, which max_staleness 600 accepts.
+        let f = fixture(|env, reflector, _a, _b| {
+            ResolutionSpec::Price(price_spec_at(env, reflector, 2_000, PriceDirection::Above, 600))
+        });
+        let ResolutionSpec::Price(spec) = f.spec.clone() else {
+            unreachable!()
+        };
+        Sep40MockClient::new(&f.env, &f.reflector_id).set_config(&14, &300);
+        feed_history(
+            &f,
+            [PriceData {
+                price: 2_500,
+                timestamp: 1_500,
+            }],
+        );
+        assert_eq!(arm_and_resolve(&f, &spec, 2_000), Outcome::Yes);
+        assert_eq!(last_price_resolution(&f).price_timestamp, 1_500);
+    }
+
+    #[test]
+    fn price_lookup_stale_beyond_max_staleness() {
+        // Same grid and record, but max_staleness 300: the walkback stops at
+        // the 1_800 step (the next candidate would be 500 s stale) and
+        // reports StalePrice without querying 1_500.
+        let f = fixture(|env, reflector, _a, _b| {
+            ResolutionSpec::Price(price_spec_at(env, reflector, 2_000, PriceDirection::Above, 300))
+        });
+        let ResolutionSpec::Price(spec) = f.spec.clone() else {
+            unreachable!()
+        };
+        Sep40MockClient::new(&f.env, &f.reflector_id).set_config(&14, &300);
+        feed_history(
+            &f,
+            [PriceData {
+                price: 2_500,
+                timestamp: 1_500,
+            }],
+        );
+        f.resolver.register_price_spec(&f.market_id, &spec);
+        f.env.ledger().set_timestamp(2_000);
+        assert_eq!(
+            f.resolver.try_resolve_price(&f.market_id),
+            Err(Ok(Error::StalePrice))
+        );
+    }
+
+    #[test]
+    fn price_lookup_exact_boundary_staleness() {
+        // Grid 30, close 1_980, record at 1_890: exactly 90 s stale.
+        // max_staleness 90 accepts (`>` comparison), 89 is StalePrice.
+        let ok = fixture_at(1_980, |env, reflector, _a, _b| {
+            ResolutionSpec::Price(price_spec_at(env, reflector, 2_000, PriceDirection::Above, 90))
+        });
+        let ResolutionSpec::Price(spec) = ok.spec.clone() else {
+            unreachable!()
+        };
+        Sep40MockClient::new(&ok.env, &ok.reflector_id).set_config(&14, &30);
+        feed_history(
+            &ok,
+            [PriceData {
+                price: 2_500,
+                timestamp: 1_890,
+            }],
+        );
+        assert_eq!(arm_and_resolve(&ok, &spec, 1_980), Outcome::Yes);
+
+        let tight = fixture_at(1_980, |env, reflector, _a, _b| {
+            ResolutionSpec::Price(price_spec_at(env, reflector, 2_000, PriceDirection::Above, 89))
+        });
+        let ResolutionSpec::Price(spec) = tight.spec.clone() else {
+            unreachable!()
+        };
+        Sep40MockClient::new(&tight.env, &tight.reflector_id).set_config(&14, &30);
+        feed_history(
+            &tight,
+            [PriceData {
+                price: 2_500,
+                timestamp: 1_890,
+            }],
+        );
+        tight.resolver.register_price_spec(&tight.market_id, &spec);
+        tight.env.ledger().set_timestamp(1_980);
+        assert_eq!(
+            tight.resolver.try_resolve_price(&tight.market_id),
+            Err(Ok(Error::StalePrice))
+        );
+    }
+
+    #[test]
+    fn price_lookup_lookback_is_bounded() {
+        // Grid 30 with max_staleness 600 would allow 20 records, but the
+        // walkback is capped at MAX_LOOKBACK_RECORDS (12) cross-contract
+        // calls: the record at 1_620 (380 s stale, within staleness) sits
+        // beyond the cap and the resolution reports StalePrice.
+        let f = fixture(|env, reflector, _a, _b| {
+            ResolutionSpec::Price(price_spec_at(env, reflector, 2_000, PriceDirection::Above, 600))
+        });
+        let ResolutionSpec::Price(spec) = f.spec.clone() else {
+            unreachable!()
+        };
+        Sep40MockClient::new(&f.env, &f.reflector_id).set_config(&14, &30);
+        feed_history(
+            &f,
+            [PriceData {
+                price: 2_500,
+                timestamp: 2_000 - 13 * 30,
+            }],
+        );
+        f.resolver.register_price_spec(&f.market_id, &spec);
+        f.env.ledger().set_timestamp(2_000);
+        assert_eq!(
+            f.resolver.try_resolve_price(&f.market_id),
+            Err(Ok(Error::StalePrice))
+        );
+    }
+
+    #[test]
+    fn resolution_zero_rejected() {
+        // A `resolution()` of 0 would divide by zero; it is a broken feed
+        // and reports InvalidPrice (issue #26 edge case).
+        let f = fixture(|env, reflector, _a, _b| {
+            ResolutionSpec::Price(price_spec_at(env, reflector, 2_000, PriceDirection::Above, 10))
+        });
+        let ResolutionSpec::Price(spec) = f.spec.clone() else {
+            unreachable!()
+        };
+        Sep40MockClient::new(&f.env, &f.reflector_id).set_config(&14, &0);
+        feed_history(
+            &f,
+            [PriceData {
+                price: 2_500,
+                timestamp: 1_999,
+            }],
+        );
+        f.resolver.register_price_spec(&f.market_id, &spec);
+        f.env.ledger().set_timestamp(2_000);
+        assert_eq!(
+            f.resolver.try_resolve_price(&f.market_id),
+            Err(Ok(Error::InvalidPrice))
+        );
+    }
+
+    #[test]
+    fn rejects_zero_and_negative_price() {
+        // Issue #26 bug 3: price <= 0 must be InvalidPrice, on both the
+        // live read and the snapshot path (a snapshot can never pin a price
+        // resolution would reject).
+        for price in [0_i128, -1, -2_500] {
+            let f = price_fixture(price, 1_999);
+            f.env.ledger().set_timestamp(2_000);
+            assert_eq!(
+                f.resolver.try_resolve_price(&f.market_id),
+                Err(Ok(Error::InvalidPrice)),
+                "price {price}"
+            );
+            let caller = Address::generate(&f.env);
+            assert_eq!(
+                f.resolver.try_snapshot_price(&f.market_id, &caller),
+                Err(Ok(Error::InvalidPrice)),
+                "price {price}"
+            );
+            assert_eq!(f.resolver.snapshot(&f.market_id), None);
+        }
+    }
+
+    #[test]
+    fn price_matrix_all_directions_equal_above_below() {
+        // 4 directions x {below, equal, above} the committed threshold.
+        let cases = [
+            (
+                PriceDirection::Above,
+                Outcome::No,
+                Outcome::No,
+                Outcome::Yes,
+            ),
+            (
+                PriceDirection::AtOrAbove,
+                Outcome::No,
+                Outcome::Yes,
+                Outcome::Yes,
+            ),
+            (
+                PriceDirection::Below,
+                Outcome::Yes,
+                Outcome::No,
+                Outcome::No,
+            ),
+            (
+                PriceDirection::AtOrBelow,
+                Outcome::Yes,
+                Outcome::Yes,
+                Outcome::No,
+            ),
+        ];
+        for (direction, below, equal, above) in cases {
+            for (price, expected) in [(1_999_i128, below), (2_000, equal), (2_001, above)] {
+                let f = fixture_at(2_000, move |env, reflector, _a, _b| {
+                    ResolutionSpec::Price(price_spec_at(env, reflector, 2_000, direction, 10))
+                });
+                let ResolutionSpec::Price(spec) = f.spec.clone() else {
+                    unreachable!()
+                };
+                feed_history(
+                    &f,
+                    [PriceData {
+                        price,
+                        timestamp: 1_999,
+                    }],
+                );
+                assert_eq!(
+                    arm_and_resolve(&f, &spec, 2_000),
+                    expected,
+                    "direction {direction:?} price {price}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn price_lookup_ignores_records_of_other_assets() {
+        // The mock's history is per-asset: a record for BTC does not answer
+        // a market on XLM. The walkback exhausts and reports StalePrice;
+        // the guardian voids under OracleUnavailable after the grace.
+        let f = fixture(|env, reflector, _a, _b| {
+            ResolutionSpec::Price(price_spec_at(env, reflector, 2_000, PriceDirection::Above, 10))
+        });
+        let ResolutionSpec::Price(spec) = f.spec.clone() else {
+            unreachable!()
+        };
+        Sep40MockClient::new(&f.env, &f.reflector_id).set_config(&14, &1);
+        Sep40MockClient::new(&f.env, &f.reflector_id).set_history(
+            &OracleAsset::Other(Symbol::new(&f.env, "BTC")),
+            &Vec::from_array(&f.env, [PriceData {
+                price: 2_500,
+                timestamp: 1_999,
+            }]),
+        );
+        f.resolver.register_price_spec(&f.market_id, &spec);
+        f.env.ledger().set_timestamp(2_000);
+        assert_eq!(
+            f.resolver.try_resolve_price(&f.market_id),
+            Err(Ok(Error::StalePrice))
+        );
+    }
+
+    #[test]
+    fn preview_price_returns_newest_record_without_resolving() {
+        // `preview_price` is the only consumer of `lastprice` (issue #26
+        // goal 4); it must not touch the market's state.
+        let f = fixture(|env, reflector, _a, _b| ResolutionSpec::Price(price_spec(env, reflector)));
+        let ResolutionSpec::Price(spec) = f.spec.clone() else {
+            unreachable!()
+        };
+        Sep40MockClient::new(&f.env, &f.reflector_id).set_config(&14, &300);
+        feed_history(
+            &f,
+            [
+                PriceData {
+                    price: 100,
+                    timestamp: 1_800,
+                },
+                PriceData {
+                    price: 2_500,
+                    timestamp: 1_999,
+                },
+            ],
+        );
+        f.resolver.register_price_spec(&f.market_id, &spec);
+        f.env.ledger().set_timestamp(2_000);
+        assert_eq!(
+            f.resolver.preview_price(&f.market_id),
+            PriceData {
+                price: 2_500,
+                timestamp: 1_999,
+            }
+        );
+        assert_eq!(f.resolver.state(&f.market_id), ResolutionState::Unconfigured);
+        assert_eq!(
+            f.market_core.get_market(&f.market_id).status,
+            MarketStatus::Open
+        );
+    }
+
+    #[test]
+    fn preview_price_wrong_mode_for_signer_markets() {
+        let f = signer_fixture();
+        assert_eq!(
+            f.resolver.try_preview_price(&f.market_id),
+            Err(Ok(Error::WrongMode))
+        );
+    }
+
+    #[test]
+    fn price_feed_panic_is_price_unavailable() {
+        // set_panic models a broken feed: every entrypoint traps, and the
+        // resolver converts that to PriceUnavailable, never a host error.
+        let f = fixture(|env, reflector, _a, _b| ResolutionSpec::Price(price_spec(env, reflector)));
+        let ResolutionSpec::Price(spec) = f.spec.clone() else {
+            unreachable!()
+        };
+        feed_history(
+            &f,
+            [PriceData {
+                price: 2_500,
+                timestamp: 1_999,
+            }],
+        );
+        Sep40MockClient::new(&f.env, &f.reflector_id).set_panic(&true);
+        f.resolver.register_price_spec(&f.market_id, &spec);
+        f.env.ledger().set_timestamp(2_000);
+        assert_eq!(
+            f.resolver.try_resolve_price(&f.market_id),
+            Err(Ok(Error::PriceUnavailable))
+        );
     }
 }
 
