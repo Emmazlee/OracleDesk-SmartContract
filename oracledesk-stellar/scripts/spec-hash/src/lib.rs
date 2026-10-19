@@ -201,44 +201,49 @@ pub fn parse_price_scaled(
     args: &[String],
     decimal: Option<&str>,
 ) -> Result<ResolutionSpec, String> {
-    let (reflector, asset, threshold, threshold_decimals, direction, max_staleness) =
-        if let Some(text) = decimal {
-            let [reflector, asset, direction, max_staleness] = args else {
-                return Err("price-scaled --decimal needs <reflector> <asset> <direction> <max_staleness>".into());
-            };
-            let (threshold, threshold_decimals) = parse_decimal_amount(text)?;
-            (
-                reflector,
-                asset,
-                threshold.to_string(),
-                threshold_decimals.to_string(),
-                direction,
-                max_staleness,
-            )
-        } else {
-            let [reflector, asset, threshold, threshold_decimals, direction, max_staleness] = args
-            else {
-                return Err("price-scaled needs <reflector> <asset> <threshold> <threshold_decimals> <direction> <max_staleness>".into());
-            };
-            (
-                reflector,
-                asset,
-                threshold.clone(),
-                threshold_decimals.clone(),
-                direction,
-                max_staleness,
-            )
+    let (reflector, asset, threshold, threshold_decimals, direction, max_staleness) = if let Some(
+        text,
+    ) = decimal
+    {
+        let [reflector, asset, direction, max_staleness] = args else {
+            return Err(
+                "price-scaled --decimal needs <reflector> <asset> <direction> <max_staleness>"
+                    .into(),
+            );
         };
+        let (threshold, threshold_decimals) = parse_decimal_amount(text)?;
+        (
+            reflector,
+            asset,
+            threshold.to_string(),
+            threshold_decimals.to_string(),
+            direction,
+            max_staleness,
+        )
+    } else {
+        let [reflector, asset, threshold, threshold_decimals, direction, max_staleness] = args
+        else {
+            return Err("price-scaled needs <reflector> <asset> <threshold> <threshold_decimals> <direction> <max_staleness>".into());
+        };
+        (
+            reflector,
+            asset,
+            threshold.clone(),
+            threshold_decimals.clone(),
+            direction,
+            max_staleness,
+        )
+    };
     Ok(ResolutionSpec::PriceScaled(ScaledPriceConfig {
-        reflector: parse_address(env, &reflector)?,
-        asset: parse_asset(env, &asset)?,
+        reflector: parse_address(env, reflector)?,
+        asset: parse_asset(env, asset)?,
         threshold: threshold
             .parse()
             .map_err(|_| "threshold must be an i128".to_string())?,
         threshold_decimals: threshold_decimals
             .parse()
             .map_err(|_| "threshold_decimals must be a u32".to_string())?,
-        direction: parse_direction(&direction)?,
+        direction: parse_direction(direction)?,
         max_staleness: max_staleness
             .parse()
             .map_err(|_| "max_staleness must be a u64".to_string())?,
@@ -330,7 +335,10 @@ pub fn parse_signers_disputable(env: &Env, args: &[String]) -> Result<Resolution
 
 pub fn parse_committee(args: &[String]) -> Result<ResolutionSpec, String> {
     let [committee_id, min_epoch, max_rotation_delta, dispute_window] = args else {
-        return Err("committee needs <committee_id> <min_epoch> <max_rotation_delta> <dispute_window_secs>".into());
+        return Err(
+            "committee needs <committee_id> <min_epoch> <max_rotation_delta> <dispute_window_secs>"
+                .into(),
+        );
     };
     Ok(ResolutionSpec::Committee(CommitteeRef {
         committee_id: committee_id
@@ -350,7 +358,9 @@ pub fn parse_committee(args: &[String]) -> Result<ResolutionSpec, String> {
 
 pub fn parse_hybrid(env: &Env, args: &[String]) -> Result<ResolutionSpec, String> {
     let Some(sep_idx) = args.iter().position(|a| a == "--") else {
-        return Err("hybrid needs <fallback_after_secs> <price args...> -- <signer args...>".into());
+        return Err(
+            "hybrid needs <fallback_after_secs> <price args...> -- <signer args...>".into(),
+        );
     };
     let price_part = &args[..sep_idx];
     let signer_part = &args[sep_idx + 1..];
@@ -465,11 +475,15 @@ fn take_decimal_flag(args: &[String]) -> Result<(Option<String>, Vec<String>), S
     if let Some(text) = &decimal {
         let scaled = match rest.first().map(String::as_str) {
             Some("price-scaled") => true,
-            Some("verify") => matches!(rest.get(1).map(String::as_str), Some(kind) if kind == "price-scaled"),
+            Some("verify") => {
+                matches!(rest.get(1).map(String::as_str), Some(kind) if kind == "price-scaled")
+            }
             _ => false,
         };
         if !scaled {
-            return Err(format!("--decimal {text} is only accepted with `price-scaled`"));
+            return Err(format!(
+                "--decimal {text} is only accepted with `price-scaled`"
+            ));
         }
     }
     Ok((decimal, rest))
@@ -497,7 +511,11 @@ pub fn run(args: &[String]) -> Result<String, CliError> {
                 })
             }
         }
-        [_, ..] => Ok(to_hex(&commitment(&env, parse_rule(&env, &rest, decimal)?, v2)?)),
+        [_, ..] => Ok(to_hex(&commitment(
+            &env,
+            parse_rule(&env, &rest, decimal)?,
+            v2,
+        )?)),
         [] => Err(CliError::Usage("missing command".into())),
     }
 }
@@ -721,11 +739,24 @@ mod tests {
             raw
         );
         assert_eq!(
-            hash_of(&["verify", &raw, "price-scaled", C1, "other:XLM", "20", "2", "above", "600"]),
+            hash_of(&[
+                "verify",
+                &raw,
+                "price-scaled",
+                C1,
+                "other:XLM",
+                "20",
+                "2",
+                "above",
+                "600"
+            ]),
             "match"
         );
         // Scaled and legacy price specs live in disjoint hash spaces:
-        assert_ne!(raw, hash_of(&["price", C1, "other:XLM", "20", "above", "600"]));
+        assert_ne!(
+            raw,
+            hash_of(&["price", C1, "other:XLM", "20", "above", "600"])
+        );
     }
 
     #[test]
@@ -771,9 +802,26 @@ mod tests {
             args(&["price-scaled", C1, "bogus", "1", "0", "above", "1"]),
             args(&["price-scaled", C1, "other:XLM", "above", "1"]),
             args(&["price-scaled", C1, "other:XLM", "1", "x", "above", "1"]),
-            args(&["--decimal", "0.20", "price", C1, "other:XLM", "1", "above", "1"]),
+            args(&[
+                "--decimal",
+                "0.20",
+                "price",
+                C1,
+                "other:XLM",
+                "1",
+                "above",
+                "1",
+            ]),
             args(&["price-scaled", C1, "other:XLM", "above", "1", "--decimal"]),
-            args(&["price-scaled", C1, "other:XLM", "above", "1", "--decimal", "-0.2"]),
+            args(&[
+                "price-scaled",
+                C1,
+                "other:XLM",
+                "above",
+                "1",
+                "--decimal",
+                "-0.2",
+            ]),
             args(&["weighted-keys", "2", "60", "nocolon"]),
             args(&["weighted-keys", "2", "60", "zz:1"]),
             args(&[

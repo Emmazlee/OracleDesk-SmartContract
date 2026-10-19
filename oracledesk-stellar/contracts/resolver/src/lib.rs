@@ -1175,16 +1175,15 @@ impl Resolver {
                 reasons.push_back(GuardianReason::UnrevealedSpec);
             }
 
-            if storage.has(&DataKey::Price(market_id))
+            if (storage.has(&DataKey::Price(market_id))
                 || storage.has(&DataKey::PriceScaled(market_id))
-                || storage.has(&DataKey::Hybrid(market_id))
+                || storage.has(&DataKey::Hybrid(market_id)))
+                && now >= market.close_time.saturating_add(ORACLE_GRACE_SECS)
             {
-                if now >= market.close_time.saturating_add(ORACLE_GRACE_SECS) {
-                    if let Err(Error::PriceUnavailable | Error::StalePrice | Error::InvalidPrice) =
-                        Self::committed_price_outcome(&env, market_id, market.close_time)
-                    {
-                        reasons.push_back(GuardianReason::OracleUnavailable);
-                    }
+                if let Err(Error::PriceUnavailable | Error::StalePrice | Error::InvalidPrice) =
+                    Self::committed_price_outcome(&env, market_id, market.close_time)
+                {
+                    reasons.push_back(GuardianReason::OracleUnavailable);
                 }
             }
 
@@ -1331,8 +1330,7 @@ impl Resolver {
     }
 
     pub fn resolve_price(env: Env, market_id: u64) -> Result<Outcome, Error> {
-        if let Ok(scaled) = Self::load::<ScaledPriceConfig>(&env, DataKey::PriceScaled(market_id))
-        {
+        if let Ok(scaled) = Self::load::<ScaledPriceConfig>(&env, DataKey::PriceScaled(market_id)) {
             if Self::resolution_state(&env, market_id).is_terminal() {
                 return Err(Error::AlreadyFinalized);
             }
@@ -1405,8 +1403,12 @@ impl Resolver {
         else {
             return Err(Error::PriceUnavailable);
         };
-        let (price_scaled, threshold_scaled) =
-            Self::rescale(data.price, feed_decimals, config.threshold, config.threshold_decimals)?;
+        let (price_scaled, threshold_scaled) = Self::rescale(
+            data.price,
+            feed_decimals,
+            config.threshold,
+            config.threshold_decimals,
+        )?;
         let outcome = Self::compare_price(&config.direction, price_scaled, threshold_scaled);
         Ok((outcome, data, feed_decimals, threshold_scaled))
     }
@@ -2393,9 +2395,7 @@ impl Resolver {
         ) else {
             return Err(Error::InvalidPrice);
         };
-        let price_scaled = price
-            .checked_mul(price_factor)
-            .ok_or(Error::InvalidPrice)?;
+        let price_scaled = price.checked_mul(price_factor).ok_or(Error::InvalidPrice)?;
         let threshold_scaled = threshold
             .checked_mul(threshold_factor)
             .ok_or(Error::InvalidPrice)?;
@@ -2945,8 +2945,7 @@ mod test {
                 .instance()
                 .get(&MOCK_HISTORY)
                 .unwrap_or_else(|| soroban_sdk::Map::new(env));
-            all.get(asset.clone())
-                .unwrap_or_else(|| Vec::new(env))
+            all.get(asset.clone()).unwrap_or_else(|| Vec::new(env))
         }
 
         /// Defaults to Reflector's public-feed shape: 14 decimals.
@@ -3252,7 +3251,13 @@ mod test {
         let reflector = Sep40MockClient::new(&f.env, &f.reflector_id);
         reflector.set_history(
             &OracleAsset::Other(Symbol::new(&f.env, "XLM")),
-            &Vec::from_array(&f.env, [PriceData { price: 2_500, timestamp: 1_999 }]),
+            &Vec::from_array(
+                &f.env,
+                [PriceData {
+                    price: 2_500,
+                    timestamp: 1_999,
+                }],
+            ),
         );
 
         let ResolutionSpec::Price(spec) = f.spec.clone() else {
@@ -3520,10 +3525,13 @@ mod test {
         };
         Sep40MockClient::new(&f.env, &f.reflector_id).set_history(
             &spec.asset,
-            &Vec::from_array(&f.env, [PriceData {
-                price,
-                timestamp: price_timestamp,
-            }]),
+            &Vec::from_array(
+                &f.env,
+                [PriceData {
+                    price,
+                    timestamp: price_timestamp,
+                }],
+            ),
         );
         f.resolver.register_price_spec(&f.market_id, &spec);
         f
@@ -5424,7 +5432,6 @@ mod test {
             .is_err());
     }
 
-
     // ----- SEP-40 grid alignment, bad prices and preview (issue #26) ------
 
     /// Installs exact-timestamp history on the fixture's `Sep40Mock` for the
@@ -5448,7 +5455,13 @@ mod test {
         // answers `None` for any off-grid timestamp. The lookup must query
         // floor(1_000_123 / 300) * 300 = 999_900 (issue #26, bug 2).
         let f = fixture_at(1_000_123, |env, reflector, _a, _b| {
-            ResolutionSpec::Price(price_spec_at(env, reflector, 2_000, PriceDirection::Above, 300))
+            ResolutionSpec::Price(price_spec_at(
+                env,
+                reflector,
+                2_000,
+                PriceDirection::Above,
+                300,
+            ))
         });
         let ResolutionSpec::Price(spec) = f.spec.clone() else {
             unreachable!()
@@ -5470,7 +5483,13 @@ mod test {
         // Grid 300, close 2_000 -> aligned 1_800. Only 1_500 has a record;
         // it is 500 s stale, which max_staleness 600 accepts.
         let f = fixture(|env, reflector, _a, _b| {
-            ResolutionSpec::Price(price_spec_at(env, reflector, 2_000, PriceDirection::Above, 600))
+            ResolutionSpec::Price(price_spec_at(
+                env,
+                reflector,
+                2_000,
+                PriceDirection::Above,
+                600,
+            ))
         });
         let ResolutionSpec::Price(spec) = f.spec.clone() else {
             unreachable!()
@@ -5493,7 +5512,13 @@ mod test {
         // the 1_800 step (the next candidate would be 500 s stale) and
         // reports StalePrice without querying 1_500.
         let f = fixture(|env, reflector, _a, _b| {
-            ResolutionSpec::Price(price_spec_at(env, reflector, 2_000, PriceDirection::Above, 300))
+            ResolutionSpec::Price(price_spec_at(
+                env,
+                reflector,
+                2_000,
+                PriceDirection::Above,
+                300,
+            ))
         });
         let ResolutionSpec::Price(spec) = f.spec.clone() else {
             unreachable!()
@@ -5519,7 +5544,13 @@ mod test {
         // Grid 30, close 1_980, record at 1_890: exactly 90 s stale.
         // max_staleness 90 accepts (`>` comparison), 89 is StalePrice.
         let ok = fixture_at(1_980, |env, reflector, _a, _b| {
-            ResolutionSpec::Price(price_spec_at(env, reflector, 2_000, PriceDirection::Above, 90))
+            ResolutionSpec::Price(price_spec_at(
+                env,
+                reflector,
+                2_000,
+                PriceDirection::Above,
+                90,
+            ))
         });
         let ResolutionSpec::Price(spec) = ok.spec.clone() else {
             unreachable!()
@@ -5535,7 +5566,13 @@ mod test {
         assert_eq!(arm_and_resolve(&ok, &spec, 1_980), Outcome::Yes);
 
         let tight = fixture_at(1_980, |env, reflector, _a, _b| {
-            ResolutionSpec::Price(price_spec_at(env, reflector, 2_000, PriceDirection::Above, 89))
+            ResolutionSpec::Price(price_spec_at(
+                env,
+                reflector,
+                2_000,
+                PriceDirection::Above,
+                89,
+            ))
         });
         let ResolutionSpec::Price(spec) = tight.spec.clone() else {
             unreachable!()
@@ -5563,7 +5600,13 @@ mod test {
         // calls: the record at 1_620 (380 s stale, within staleness) sits
         // beyond the cap and the resolution reports StalePrice.
         let f = fixture(|env, reflector, _a, _b| {
-            ResolutionSpec::Price(price_spec_at(env, reflector, 2_000, PriceDirection::Above, 600))
+            ResolutionSpec::Price(price_spec_at(
+                env,
+                reflector,
+                2_000,
+                PriceDirection::Above,
+                600,
+            ))
         });
         let ResolutionSpec::Price(spec) = f.spec.clone() else {
             unreachable!()
@@ -5589,7 +5632,13 @@ mod test {
         // A `resolution()` of 0 would divide by zero; it is a broken feed
         // and reports InvalidPrice (issue #26 edge case).
         let f = fixture(|env, reflector, _a, _b| {
-            ResolutionSpec::Price(price_spec_at(env, reflector, 2_000, PriceDirection::Above, 10))
+            ResolutionSpec::Price(price_spec_at(
+                env,
+                reflector,
+                2_000,
+                PriceDirection::Above,
+                10,
+            ))
         });
         let ResolutionSpec::Price(spec) = f.spec.clone() else {
             unreachable!()
@@ -5692,7 +5741,13 @@ mod test {
         // a market on XLM. The walkback exhausts and reports StalePrice;
         // the guardian voids under OracleUnavailable after the grace.
         let f = fixture(|env, reflector, _a, _b| {
-            ResolutionSpec::Price(price_spec_at(env, reflector, 2_000, PriceDirection::Above, 10))
+            ResolutionSpec::Price(price_spec_at(
+                env,
+                reflector,
+                2_000,
+                PriceDirection::Above,
+                10,
+            ))
         });
         let ResolutionSpec::Price(spec) = f.spec.clone() else {
             unreachable!()
@@ -5700,10 +5755,13 @@ mod test {
         Sep40MockClient::new(&f.env, &f.reflector_id).set_config(&14, &1);
         Sep40MockClient::new(&f.env, &f.reflector_id).set_history(
             &OracleAsset::Other(Symbol::new(&f.env, "BTC")),
-            &Vec::from_array(&f.env, [PriceData {
-                price: 2_500,
-                timestamp: 1_999,
-            }]),
+            &Vec::from_array(
+                &f.env,
+                [PriceData {
+                    price: 2_500,
+                    timestamp: 1_999,
+                }],
+            ),
         );
         f.resolver.register_price_spec(&f.market_id, &spec);
         f.env.ledger().set_timestamp(2_000);
@@ -5744,7 +5802,10 @@ mod test {
                 timestamp: 1_999,
             }
         );
-        assert_eq!(f.resolver.state(&f.market_id), ResolutionState::Unconfigured);
+        assert_eq!(
+            f.resolver.state(&f.market_id),
+            ResolutionState::Unconfigured
+        );
         assert_eq!(
             f.market_core.get_market(&f.market_id).status,
             MarketStatus::Open
@@ -5910,7 +5971,10 @@ mod test {
             i128::try_from_val(&f.env, &get("raw_price")).unwrap(),
             25_000_000_000_000
         );
-        assert_eq!(u32::try_from_val(&f.env, &get("feed_decimals")).unwrap(), 14);
+        assert_eq!(
+            u32::try_from_val(&f.env, &get("feed_decimals")).unwrap(),
+            14
+        );
         assert_eq!(
             i128::try_from_val(&f.env, &get("threshold_scaled")).unwrap(),
             20_000_000_000_000
@@ -5965,7 +6029,10 @@ mod test {
             f.resolver.try_resolve_price(&f.market_id),
             Err(Ok(Error::InvalidPrice))
         );
-        assert_eq!(f.resolver.state(&f.market_id), ResolutionState::Unconfigured);
+        assert_eq!(
+            f.resolver.state(&f.market_id),
+            ResolutionState::Unconfigured
+        );
     }
 
     #[test]
