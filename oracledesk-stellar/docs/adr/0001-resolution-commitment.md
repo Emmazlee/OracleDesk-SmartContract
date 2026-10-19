@@ -56,6 +56,38 @@ The commitment format is extended by [ADR 0004](0004-spec-versioning.md): a
 salted, versioned, domain-separated `ResolutionSpecV2` envelope accepted
 alongside the legacy format described above.
 
+## Price threshold units
+
+A SEP-40 feed (Reflector included) reports `price` as a decimal-scaled integer:
+the value is `actual x 10^decimals`, where `decimals()` is published by the
+feed itself (14 for Reflector's canonical feeds). That makes the units of a
+committed threshold load-bearing, and the original `PriceConfig` never declared
+them.
+
+* **Legacy `Price`.** `PriceConfig.threshold` is compared *raw* against the
+  feed's reported integer — feed-native units, no scaling, no decimals call.
+  This meaning is frozen: field names, types and the enum's variant order are
+  exactly what every already-committed `resolution_hash` was built over, and
+  the golden vectors in `contracts/resolver/src/lib.rs` (`mod golden`) and
+  `scripts/spec-hash` pin it. Do not "fix" the legacy variant by adding
+  scaling to it — that silently breaks every existing commitment.
+* **Decimal-explicit `PriceScaled`.** Issue #26 adds
+  `ResolutionSpec::PriceScaled(ScaledPriceConfig)`, which carries
+  `threshold_decimals` alongside the threshold. At resolution both sides are
+  rescaled with checked base-10 arithmetic to
+  `max(feed_decimals, threshold_decimals)` before comparison; an `i128`
+  overflow traps the read as `InvalidPrice`, and `threshold_decimals` above
+  `MAX_THRESHOLD_DECIMALS` (38, the largest power of ten an `i128` holds) is
+  rejected with `InvalidConfig` at reveal, before any commitment is stored.
+* **Hash compatibility.** XDR unions encode variants positionally, so the new
+  variant and its storage key (`DataKey::PriceScaled`) are appended *last* in
+  `ResolutionSpec` and `DataKey`: every previously committed hash — legacy
+  `Price`, `Signers`, and every later-appended variant — is byte-identical.
+  The scaled config is a distinct variant, not a field added to `PriceConfig`,
+  for the same reason, and because bare `PriceConfig` XDR is already stored
+  under `DataKey::Price` and must never be reinterpreted. A market is either
+  legacy-price or scaled-price, never both.
+
 ## Liveness fallback
 
 A market whose spec is never revealed, whose committed feed is permanently
@@ -88,8 +120,13 @@ the single guardian key acts. `Resolver::expire_market` removes that dependency.
   proposal shortly before the deadline can let expiry void a market whose
   signers are still re-attesting; that is accepted by design.
 * **Unusable feed.** A Reflector call that traps is treated as
-  `PriceUnavailable`, so a broken oracle address cannot make expiry revert
-  forever; any other error (for example `NotInitialized`) is still surfaced.
+  `PriceUnavailable`, and the expiry and guardian paths accept
+  `PriceUnavailable`, `StalePrice` (no acceptable record on the feed's
+  resolution grid within `max_staleness`, and no earlier one within the
+  bounded lookback) and `InvalidPrice` (a non-positive published price, or a
+  feed reporting `resolution() == 0`) as "feed unusable", so a broken or dead
+  oracle address cannot make expiry revert forever. Any other error (for
+  example `NotInitialized`) is still surfaced.
 
 ## Weighted-key attestations
 
