@@ -3,12 +3,14 @@
 //! `docs/adr/0004-spec-versioning.md`). Off-chain dev tool only; never deployed.
 //!
 //! All hashing delegates to the resolver crate's own `legacy_spec_hash` /
-//! `spec_v2_hash`, so the tool cannot drift from the contract.
+//! `spec_v2_hash` / `scaled_spec_hash`, so the tool cannot drift from the
+//! contract.
 
 use resolver::{
-    legacy_spec_hash, spec_v2_hash, CommitteeRef, DisputableSignerConfig, Escalation, HybridConfig,
-    OracleAsset, PriceConfig, PriceDirection, ResolutionSpec, ResolutionSpecV2, ScaledPriceConfig,
-    SignerConfig, WeightedKey, WeightedKeyConfig, MAX_THRESHOLD_DECIMALS,
+    legacy_spec_hash, scaled_spec_hash, spec_v2_hash, CommitteeRef, DisputableSignerConfig,
+    Escalation, HybridConfig, OracleAsset, PriceConfig, PriceDirection, ResolutionSpec,
+    ResolutionSpecV2, ScaledPriceConfig, SignerConfig, WeightedKey, WeightedKeyConfig,
+    MAX_THRESHOLD_DECIMALS,
 };
 use soroban_sdk::{Address, Bytes, BytesN, Env, Symbol, Vec as SorobanVec};
 
@@ -191,16 +193,17 @@ pub fn parse_decimal_amount(value: &str) -> Result<(i128, u32), String> {
     Ok((threshold, frac_part.len() as u32))
 }
 
-/// Builds `ResolutionSpec::PriceScaled`. With `--decimal <d.d>` the threshold
-/// and its decimals come from the decimal string and the positional args drop
-/// to `<reflector> <asset> <direction> <max_staleness>`; otherwise they are
-/// the third and fourth positional args, matching the resolver's
-/// `register_scaled_price_spec` field order.
+/// Builds the [`ScaledPriceConfig`] a market commits to through
+/// `resolver::scaled_spec_hash` (issue #26). With `--decimal <d.d>` the
+/// threshold and its decimals come from the decimal string and the
+/// positional args drop to `<reflector> <asset> <direction>
+/// <max_staleness>`; otherwise they are the third and fourth positional
+/// args, matching the resolver's `register_scaled_price_spec` field order.
 pub fn parse_price_scaled(
     env: &Env,
     args: &[String],
     decimal: Option<&str>,
-) -> Result<ResolutionSpec, String> {
+) -> Result<ScaledPriceConfig, String> {
     let (reflector, asset, threshold, threshold_decimals, direction, max_staleness) = if let Some(
         text,
     ) = decimal
@@ -234,7 +237,7 @@ pub fn parse_price_scaled(
             max_staleness,
         )
     };
-    Ok(ResolutionSpec::PriceScaled(ScaledPriceConfig {
+    Ok(ScaledPriceConfig {
         reflector: parse_address(env, reflector)?,
         asset: parse_asset(env, asset)?,
         threshold: threshold
@@ -247,7 +250,7 @@ pub fn parse_price_scaled(
         max_staleness: max_staleness
             .parse()
             .map_err(|_| "max_staleness must be a u64".to_string())?,
-    }))
+    })
 }
 
 pub fn parse_weighted_keys(env: &Env, args: &[String]) -> Result<ResolutionSpec, String> {
@@ -383,20 +386,49 @@ pub fn parse_hybrid(env: &Env, args: &[String]) -> Result<ResolutionSpec, String
     }))
 }
 
-fn parse_rule(env: &Env, args: &[String], decimal: Option<&str>) -> Result<ResolutionSpec, String> {
+/// A parsed top-level rule. `Rule` is a legacy / V2-representable
+/// `ResolutionSpec`; `Scaled` is issue #26's decimal-explicit mode, which
+/// commits through its own domain-tagged preimage (`scaled_spec_hash`)
+/// because PR #176 made `oracledesk-types` the frozen canonical home of
+/// `ResolutionSpec` (see `docs/adr/0001-resolution-commitment.md`).
+enum ParsedRule {
+    Rule(ResolutionSpec),
+    Scaled(ScaledPriceConfig),
+}
+
+fn parse_rule(env: &Env, args: &[String], decimal: Option<&str>) -> Result<ParsedRule, String> {
     match args {
-        [kind, rest @ ..] if kind == "signers" => parse_signers(env, rest),
-        [kind, rest @ ..] if kind == "price" => parse_price(env, rest),
-        [kind, rest @ ..] if kind == "price-scaled" => parse_price_scaled(env, rest, decimal),
-        [kind, rest @ ..] if kind == "weighted-keys" => parse_weighted_keys(env, rest),
-        [kind, rest @ ..] if kind == "signers-disputable" => parse_signers_disputable(env, rest),
-        [kind, rest @ ..] if kind == "committee" => parse_committee(rest),
-        [kind, rest @ ..] if kind == "hybrid" => parse_hybrid(env, rest),
+        [kind, rest @ ..] if kind == "signers" => Ok(ParsedRule::Rule(parse_signers(env, rest)?)),
+        [kind, rest @ ..] if kind == "price" => Ok(ParsedRule::Rule(parse_price(env, rest)?)),
+        [kind, rest @ ..] if kind == "price-scaled" => {
+            Ok(ParsedRule::Scaled(parse_price_scaled(env, rest, decimal)?))
+        }
+        [kind, rest @ ..] if kind == "weighted-keys" => {
+            Ok(ParsedRule::Rule(parse_weighted_keys(env, rest)?))
+        }
+        [kind, rest @ ..] if kind == "signers-disputable" => {
+            Ok(ParsedRule::Rule(parse_signers_disputable(env, rest)?))
+        }
+        [kind, rest @ ..] if kind == "committee" => Ok(ParsedRule::Rule(parse_committee(rest)?)),
+        [kind, rest @ ..] if kind == "hybrid" => Ok(ParsedRule::Rule(parse_hybrid(env, rest)?)),
         _ => Err("expected `signers`, `price`, `price-scaled`, `weighted-keys`, `signers-disputable`, `committee` or `hybrid`".into()),
     }
 }
 
-fn commitment(env: &Env, rule: ResolutionSpec, v2: Option<V2Params>) -> Result<[u8; 32], String> {
+fn commitment(env: &Env, rule: ParsedRule, v2: Option<V2Params>) -> Result<[u8; 32], String> {
+    let rule = match rule {
+        ParsedRule::Scaled(cfg) => {
+            if v2.is_some() {
+                return Err(
+                    "price-scaled commits through its own domain-tagged preimage and does not \
+                     support the --v2 envelope"
+                        .into(),
+                );
+            }
+            return Ok(scaled_spec_hash(env, &cfg).to_array());
+        }
+        ParsedRule::Rule(rule) => rule,
+    };
     let hash = match v2 {
         None => legacy_spec_hash(env, &rule),
         Some(params) => spec_v2_hash(
@@ -647,8 +679,6 @@ mod tests {
 
     const SALT: &str = "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20";
     const V2_GOLDEN: &str = "27e995544f9f631be41177890b7a1be7e17c667e4e531aa08e5089dd899566ae";
-    const GOLDEN_PRICE_SCALED: &str =
-        "9acdc16aee4e968267ec4d8d2ba05f75004166ef4b1055f937f2873c34c233cb";
 
     fn v2_args<'a>(salt: &'a str, passphrase: &'a str, market_core: &'a str) -> Vec<&'a str> {
         vec![
@@ -761,13 +791,47 @@ mod tests {
 
     #[test]
     fn golden_price_scaled_vector() {
-        // Derived from the resolver's own `legacy_spec_hash` the first time
-        // this vector was added; the `scaled_spec_*` resolver tests register
-        // the same shape on chain.
-        assert_eq!(
-            hash_of(&["price-scaled", C1, "other:XLM", "20", "2", "above", "600"]),
-            GOLDEN_PRICE_SCALED
+        // Issue #26 under PR #176's shared-types layout: the scaled
+        // commitment is `sha256("oracledesk:scaled-price-spec" ||
+        // XDR(ScaledPriceConfig))` — a resolver-local domain-tagged preimage
+        // (see `docs/adr/0001-resolution-commitment.md`), not a
+        // `ResolutionSpec` variant. The CLI delegates to the contract's own
+        // `scaled_spec_hash`, so the two cannot drift; this vector pins the
+        // *property* (delegation + disjointness), not a literal digest:
+        // re-pinning the old enum-variant hex `9acdc16a…` would assert a
+        // preimage this design no longer produces, and no host run is
+        // possible in-tree to derive a new one while
+        // `contracts/oracledesk-types` fails to compile. Re-deriving a
+        // literal golden here is a listed maintainer follow-up.
+        let raw = hash_of(&["price-scaled", C1, "other:XLM", "20", "2", "above", "600"]);
+        assert_eq!(raw.len(), 64);
+        assert!(raw.chars().all(|c| c.is_ascii_hexdigit()));
+
+        let env = Env::default();
+        let cfg = ScaledPriceConfig {
+            reflector: parse_address(&env, C1).unwrap(),
+            asset: parse_asset(&env, "other:XLM").unwrap(),
+            threshold: 20,
+            threshold_decimals: 2,
+            direction: PriceDirection::Above,
+            max_staleness: 600,
+        };
+        assert_eq!(raw, to_hex(&scaled_spec_hash(&env, &cfg).to_array()));
+
+        // Disjoint hash spaces: the feed-native legacy reading of the same
+        // numbers, and the signers mode, must never collide with a scaled
+        // preimage.
+        assert_ne!(
+            raw,
+            hash_of(&["price", C1, "other:XLM", "20", "above", "600"])
         );
+        assert_ne!(raw, hash_of(&["signers", "1", "5", G1]));
+
+        // The V2 envelope wraps a `ResolutionSpec` and therefore rejects a
+        // scaled rule rather than silently hashing a different preimage.
+        let mut v2_scaled = v2_args(SALT, "Test SDF Network ; September 2015", C1);
+        v2_scaled.extend_from_slice(&["price-scaled", C1, "other:XLM", "20", "2", "above", "600"]);
+        assert!(matches!(run(&args(&v2_scaled)), Err(CliError::Usage(_))));
     }
 
     #[test]

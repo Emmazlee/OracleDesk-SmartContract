@@ -71,22 +71,43 @@ them.
   the golden vectors in `contracts/resolver/src/lib.rs` (`mod golden`) and
   `scripts/spec-hash` pin it. Do not "fix" the legacy variant by adding
   scaling to it — that silently breaks every existing commitment.
-* **Decimal-explicit `PriceScaled`.** Issue #26 adds
-  `ResolutionSpec::PriceScaled(ScaledPriceConfig)`, which carries
-  `threshold_decimals` alongside the threshold. At resolution both sides are
-  rescaled with checked base-10 arithmetic to
+* **Decimal-explicit scaled price.** Issue #26 adds
+  `ScaledPriceConfig` (defined in `contracts/resolver`, alongside
+  `register_scaled_price_spec`), which carries `threshold_decimals`
+  alongside the threshold. At resolution both sides are rescaled with
+  checked base-10 arithmetic to
   `max(feed_decimals, threshold_decimals)` before comparison; an `i128`
   overflow traps the read as `InvalidPrice`, and `threshold_decimals` above
   `MAX_THRESHOLD_DECIMALS` (38, the largest power of ten an `i128` holds) is
   rejected with `InvalidConfig` at reveal, before any commitment is stored.
-* **Hash compatibility.** XDR unions encode variants positionally, so the new
-  variant and its storage key (`DataKey::PriceScaled`) are appended *last* in
-  `ResolutionSpec` and `DataKey`: every previously committed hash — legacy
-  `Price`, `Signers`, and every later-appended variant — is byte-identical.
-  The scaled config is a distinct variant, not a field added to `PriceConfig`,
-  for the same reason, and because bare `PriceConfig` XDR is already stored
-  under `DataKey::Price` and must never be reinterpreted. A market is either
-  legacy-price or scaled-price, never both.
+* **Hash compatibility.** PR #176 moved `ResolutionSpec` (and every config
+  type it wraps) into `contracts/oracledesk-types`, the shared types crate
+  that router, treasury and `scripts/spec-hash` all flow through, so a
+  seventh variant cannot be appended from inside the resolver without
+  editing that crate. The scaled commitment therefore lives in its own
+  domain-tagged preimage:
+  `sha256("oracledesk:scaled-price-spec" || XDR(ScaledPriceConfig))`
+  (`resolver::scaled_spec_hash`), the same construction ADR 0004 uses for
+  the V2 envelope. The three spaces are provably disjoint: every legacy
+  preimage is an `ScVal` XDR starting `00 00 00 10`; the V2 tag starts
+  `oracledesk:resolution-spec` and the scaled tag `oracledesk:scaled-`, so
+  they differ at a fixed offset. Consequently every previously committed
+  hash — legacy `Price`, `Signers`, and every later-appended variant — is
+  byte-identical; nothing was reordered or renumbered. The scaled config is
+  a distinct struct, not a field added to `PriceConfig`, for the same
+  reason, and because bare `PriceConfig` XDR is already stored under
+  `DataKey::Price` and must never be reinterpreted. A market is either
+  legacy-price or scaled-price, never both (`assert_unconfigured` checks
+  `DataKey::Price`, `DataKey::Signers` and the appended
+  `DataKey::PriceScaled`).
+* **Maintainer follow-up (canonical home).** The append-only shape this ADR
+  originally planned — a `PriceScaled(ScaledPriceConfig)` variant added
+  *last* in `oracledesk-types::ResolutionSpec` and in `DataKey` — remains
+  the canonical end state once `oracledesk-types` compiles again (it
+  currently fails on every toolchain because its line 27 never imports
+  `contracttype`). Adding it there is additive for hashing: the six
+  existing variants keep their preimages, so the domain-tagged form above
+  can be migrated variant-by-variant without breaking committed markets.
 
 ## Liveness fallback
 

@@ -111,7 +111,8 @@ Independent resolution modes, all ultimately calling
   exhausts) is `StalePrice`, so operators should resolve before the window
   closes and guardians may void via the `OracleUnavailable` path after grace.
   The legacy `Price` spec compares the threshold in feed-native units (raw
-  integer, no scaling); the decimal-explicit `PriceScaled` spec carries
+  integer, no scaling); the decimal-explicit scaled spec
+  (`ScaledPriceConfig`) carries
   `threshold_decimals` and rescales both sides to the coarser of
   `decimals()` and `threshold_decimals` before comparing — see ADR 0001,
   "Price threshold units". `preview_price(market_id)` reads the feed's newest
