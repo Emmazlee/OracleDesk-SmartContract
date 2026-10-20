@@ -150,6 +150,59 @@ pub struct ScaledPriceConfig {
     pub max_staleness: u64,
 }
 
+/// Hard cap on the grid slots a TWAP resolution attempt reads (issue #27).
+/// Bounds the cross-contract `price(asset, ts)` calls the sampling loop may
+/// make, so a TWAP market stays inside Soroban's per-transaction CPU budget
+/// even when most records in the window are missing (the cap applies to
+/// *reads inspected*, not samples found — a window of absent records
+/// terminates after this many calls instead of walking the whole grid).
+///
+/// **Reasoned, not measured.** The issue asks for a value "chosen from
+/// measured CPU cost" via `env.cost_estimate()` against the registered
+/// wasm; that measurement is not executable in the environment this change
+/// landed in (the wasm-hash build gate fails before any test can run, so no
+/// cost number is recorded — see `docs/adr/0001-resolution-commitment.md`,
+/// "TWAP variant"). 32 is instead taken from the contract's own accepted
+/// ceilings: [`MAX_WEIGHTED_SIGNERS`] and [`MAX_COMMITTEE`] are both 32, and
+/// the weighted-keys path already verifies up to 32 ed25519 signatures in
+/// one call — a cost per item strictly above one bounded cross-contract
+/// price read — so a 32-sample TWAP cannot be more expensive than flows the
+/// protocol already accepts. Registration rejects `window / resolution()`
+/// above this cap outright (`register_twap_spec`), so a compliant feed
+/// never hits the resolve-time truncation; the cap only guards against a
+/// feed changing `resolution()` after the commitment.
+pub const MAX_TWAP_SAMPLES: u32 = 32;
+
+/// Time-weighted-average price rule (issue #27). The market settles on the
+/// average of the feed's records over a window ending at `close_time`
+/// instead of a single print: a manipulated or anomalous close record can no
+/// longer decide the market on its own. Like the legacy [`PriceConfig`] (and
+/// unlike [`ScaledPriceConfig`], issue #26) the `threshold` is in
+/// feed-native units — the TWAP is a raw-price average — and the committed
+/// comparison applies to the floored average (see `twap_outcome` and ADR
+/// 0001). `min_samples`/`max_gap` encode how much of the window the feed
+/// must actually have filled: resolution is rejected (`StalePrice`) below
+/// `min_samples` present records or when any gap — window start to first
+/// sample, consecutive samples, or last sample to `close_time` — exceeds
+/// `max_gap`.
+///
+/// Same canonical-home note as [`ScaledPriceConfig`]: this is a
+/// resolver-local type committing through a domain-tagged preimage
+/// ([`twap_spec_hash`]) because PR #176 froze `oracledesk-types`'
+/// `ResolutionSpec` as the shared enum router and treasury consume; the
+/// append-into-types-crate follow-up is recorded in ADR 0001.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TwapConfig {
+    pub reflector: Address,
+    pub asset: OracleAsset,
+    pub threshold: i128,
+    pub direction: PriceDirection,
+    pub window: u64,
+    pub min_samples: u32,
+    pub max_gap: u64,
+}
+
 /// Legacy proposal shape, stored under [`DataKey::Proposal`]. Only read (as a
 /// fallback) by resolvers that inherited state from before `AttestedOutcome`;
 /// see [`SignerProposalV2`] and `docs/adr/0003-attested-outcome-migration.md`.
@@ -306,10 +359,11 @@ pub enum GuardianActionKind {
 // and treasury pass `resolver::ResolutionSpec` straight into
 // `ResolutionSpecV2.rule`, so re-declaring a local superset enum here would
 // break those crates — the enum's canonical home is the shared types crate,
-// full stop. The decimal-scaled mode of issue #26 therefore commits through
-// its own domain-tagged preimage, [`scaled_spec_hash`], instead of through a
-// seventh `ResolutionSpec` variant; see ADR 0001 for the hash-space argument
-// and the maintainer follow-up of moving the variant into the types crate
+// full stop. The decimal-scaled mode of issue #26 and the TWAP mode of issue
+// #27 therefore commit through their own domain-tagged preimages,
+// [`scaled_spec_hash`] and [`twap_spec_hash`], instead of through seventh and
+// eighth `ResolutionSpec` variants; see ADR 0001 for the hash-space argument
+// and the maintainer follow-up of moving the variants into the types crate
 // (append-only) once that crate's toolchain gate is restored.
 
 /// Domain tag prepended to a [`ResolutionSpecV2`] before hashing. Every legacy
@@ -351,6 +405,26 @@ pub const SCALED_SPEC_DOMAIN: &str = "oracledesk:scaled-price-spec";
 /// contract.
 pub fn scaled_spec_hash(env: &Env, cfg: &ScaledPriceConfig) -> BytesN<32> {
     let mut preimage = Bytes::from_slice(env, SCALED_SPEC_DOMAIN.as_bytes());
+    preimage.append(&cfg.clone().to_xdr(env));
+    env.crypto().sha256(&preimage).into()
+}
+
+/// Domain tag prepended to a [`TwapConfig`] before hashing (issue #27).
+/// Same disjointness argument as [`SCALED_SPEC_DOMAIN`]: legacy preimages
+/// start `00 00 00 10` (ScVal), V2 preimages start `oracledesk:resolution-`,
+/// scaled preimages start `oracledesk:scaled-price-spec` and this tag starts
+/// `oracledesk:price-twap-spec` — no preimage of one mode can be a preimage
+/// of another. A TWAP market's `resolution_hash` therefore lives in its own
+/// hash space and every already-committed `Price` / `Signers` / V2 hash
+/// stays byte-for-byte valid (ADR 0001).
+pub const TWAP_SPEC_DOMAIN: &str = "oracledesk:price-twap-spec";
+
+/// Hash a TWAP commitment is checked against:
+/// `sha256(TWAP_SPEC_DOMAIN || XDR(cfg))`, the [`TwapConfig`] counterpart
+/// of [`scaled_spec_hash`]; `scripts/spec-hash` delegates to this same
+/// function so the tool cannot drift from the contract.
+pub fn twap_spec_hash(env: &Env, cfg: &TwapConfig) -> BytesN<32> {
+    let mut preimage = Bytes::from_slice(env, TWAP_SPEC_DOMAIN.as_bytes());
     preimage.append(&cfg.clone().to_xdr(env));
     env.crypto().sha256(&preimage).into()
 }
@@ -465,6 +539,10 @@ pub enum DataKey {
     /// stored under `DataKey::Price` are bare `PriceConfig` XDR and must not
     /// be reinterpreted (issue #26).
     PriceScaled(u64),
+    /// Appended last (after `PriceScaled`, same positional-discriminant
+    /// discipline, issue #27): a revealed TWAP rule's `TwapConfig` lives
+    /// under its own key so no stored payload is ever reinterpreted.
+    PriceTwap(u64),
 }
 
 /// The registered signer group/authority, whichever kind the market committed to.
@@ -528,6 +606,22 @@ pub struct PriceResolutionScaled {
     pub feed_decimals: u32,
     pub threshold_scaled: i128,
     pub lookup_timestamp: u64,
+    pub outcome: Outcome,
+}
+
+/// Emitted alongside the [`PriceResolution`]/[`PriceResolutionV2`] pair for
+/// a [`TwapConfig`] settlement (issue #27): the floored time-weighted
+/// average, how many grid records answered, and the oldest/newest sample
+/// timestamps. New event type, so existing indexer decoders are untouched.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TwapResolution {
+    #[topic]
+    pub market_id: u64,
+    pub twap: i128,
+    pub samples: u32,
+    pub first_ts: u64,
+    pub last_ts: u64,
     pub outcome: Outcome,
 }
 
@@ -849,6 +943,27 @@ impl Resolver {
         Self::validate_scaled_rule(&spec)?;
         Self::assert_matches_commitment(&env, market_id, &scaled_spec_hash(&env, &spec))?;
         Self::store_scaled_rule(&env, market_id, &spec);
+        Ok(())
+    }
+
+    /// Reveals a time-weighted-average price rule committed to as
+    /// `sha256(TWAP_SPEC_DOMAIN || XDR(TwapConfig))` (issue #27). Same
+    /// commit/reveal flow as [`register_scaled_price_spec`], with two
+    /// differences. First, the static validation
+    /// ([`validate_twap_rule`]): `window > 0`, `min_samples >= 2`,
+    /// `max_gap` in `(0, window]`, `threshold >= 0`. Second, feasibility is
+    /// checked *against the live feed*: the grid period only exists
+    /// on-chain, so registration calls `resolution()` on the configured
+    /// reflector and rejects `window / resolution > MAX_TWAP_SAMPLES` or
+    /// `min_samples > window / resolution` with `InvalidConfig`. This makes
+    /// the reflector required reachable at registration (a trapping feed
+    /// gives `PriceUnavailable`) — deliberate: an unresolvable TWAP market
+    /// is caught at reveal time, not at close.
+    pub fn register_twap_spec(env: Env, market_id: u64, spec: TwapConfig) -> Result<(), Error> {
+        Self::assert_unconfigured(&env, market_id)?;
+        Self::validate_twap_rule(&env, &spec)?;
+        Self::assert_matches_commitment(&env, market_id, &twap_spec_hash(&env, &spec))?;
+        Self::store_twap_rule(&env, market_id, &spec);
         Ok(())
     }
 
@@ -1177,6 +1292,7 @@ impl Resolver {
 
             if (storage.has(&DataKey::Price(market_id))
                 || storage.has(&DataKey::PriceScaled(market_id))
+                || storage.has(&DataKey::PriceTwap(market_id))
                 || storage.has(&DataKey::Hybrid(market_id)))
                 && now >= market.close_time.saturating_add(ORACLE_GRACE_SECS)
             {
@@ -1330,6 +1446,15 @@ impl Resolver {
     }
 
     pub fn resolve_price(env: Env, market_id: u64) -> Result<Outcome, Error> {
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::PriceTwap(market_id))
+        {
+            // TWAP markets resolve through the same entrypoint as scaled
+            // ones (issue #27); `resolve_twap` is the explicit alias.
+            return Self::resolve_twap(env, market_id);
+        }
         if let Ok(scaled) = Self::load::<ScaledPriceConfig>(&env, DataKey::PriceScaled(market_id)) {
             if Self::resolution_state(&env, market_id).is_terminal() {
                 return Err(Error::AlreadyFinalized);
@@ -1381,6 +1506,197 @@ impl Resolver {
         Ok(outcome)
     }
 
+    /// Resolves a [`TwapConfig`] market (issue #27). Same lifecycle as
+    /// `resolve_price` (closed, not terminal), and markets already revealed
+    /// as TWAP also resolve through `resolve_price`, which dispatches here.
+    /// Non-TWAP markets are `WrongMode`.
+    pub fn resolve_twap(env: Env, market_id: u64) -> Result<Outcome, Error> {
+        if let Ok(config) = Self::load::<TwapConfig>(&env, DataKey::PriceTwap(market_id)) {
+            if Self::resolution_state(&env, market_id).is_terminal() {
+                return Err(Error::AlreadyFinalized);
+            }
+            let market_core: Address = Self::instance_get(&env, DataKey::MarketCore)?;
+            return Self::settle_twap(&env, &market_core, market_id, &config);
+        }
+        Err(Error::WrongMode)
+    }
+
+    /// Samples the committed feed at every `resolution()`-aligned timestamp
+    /// in `(close_time - window, close_time]` and computes the floored,
+    /// time-weighted average with checked `i128` arithmetic. Returns
+    /// `(twap, samples, first_ts, last_ts, outcome)`.
+    ///
+    /// Sampling details (issue #27):
+    /// - Grid alignment reuses the #26 machinery: the newest queried
+    ///   timestamp is `close_time - close_time % resolution()`, walked down
+    ///   in `resolution()` steps while it stays inside the window.
+    /// - Missing records (`None`) are skipped, not fatal; a trapping feed
+    ///   or a failing `price` call is `PriceUnavailable`; `resolution()` of
+    ///   0 is a broken feed (`InvalidPrice`, it would divide by zero).
+    /// - The loop is capped at [`MAX_TWAP_SAMPLES`] *reads inspected* (not
+    ///   samples found), so a window of absent records terminates bounded
+    ///   and then fails the `min_samples`/gap checks below.
+    /// - Records are kept keyed by their returned `timestamp`, duplicates
+    ///   (a feed answering with the same record for several queries) are
+    ///   counted once, and records outside the window or newer than
+    ///   `close_time` are ignored / rejected like `validate_price` does.
+    /// - Weights: each sample is weighted by the time until the next
+    ///   sample; the newest sample is weighted `close_time - last_ts + 1`
+    ///   so the closing second is included, the convention picked in ADR
+    ///   0001 and applied consistently on both the numerator and the
+    ///   denominator.
+    /// - Any sample price `<= 0` is `InvalidPrice` (same rule as #26);
+    ///   any `checked_mul`/`checked_add` overflow is `InvalidPrice`.
+    /// - Floor division: the `AtOrAbove`/`AtOrBelow` comparison of
+    ///   `compare_price` applies to the floored average.
+    fn twap_outcome(
+        env: &Env,
+        config: &TwapConfig,
+        close_time: u64,
+    ) -> Result<(i128, u32, u64, u64, Outcome), Error> {
+        let client = ReflectorPriceClient::new(env, &config.reflector);
+        let Ok(Ok(resolution)) = client.try_resolution() else {
+            return Err(Error::PriceUnavailable);
+        };
+        if resolution == 0 {
+            return Err(Error::InvalidPrice);
+        }
+        let res = resolution as u64;
+        let end = close_time - close_time % res;
+        let start = close_time.saturating_sub(config.window);
+        // Oldest-first, strictly ascending timestamps. Bounded in memory by
+        // MAX_TWAP_SAMPLES; never persisted.
+        let mut samples: Vec<(u64, i128)> = Vec::new(env);
+        let mut ts = end;
+        let mut inspected = 0u32;
+        while ts > start {
+            if inspected >= MAX_TWAP_SAMPLES {
+                // Read cap on *reads*, not found samples (issue #27
+                // budget): only reachable if the feed changed
+                // `resolution()` after registration widened the slot count
+                // past MAX_TWAP_SAMPLES. Validation below then rejects via
+                // the min_samples / gap rules rather than trusting a
+                // silently truncated window's average as complete.
+                break;
+            }
+            inspected += 1;
+            match client.try_price(&config.asset, &ts) {
+                Ok(Ok(Some(data))) => {
+                    if data.price <= 0 {
+                        return Err(Error::InvalidPrice);
+                    }
+                    if data.timestamp > close_time {
+                        return Err(Error::StalePrice);
+                    }
+                    if data.timestamp > start {
+                        // Keep the ascending invariant and count each
+                        // distinct timestamp once: samples collected so far
+                        // all have timestamp > this slot's query, so an
+                        // already-seen or newer timestamp is a duplicate of
+                        // a record the walk counted already.
+                        let duplicate = samples
+                            .get(0)
+                            .is_some_and(|(head, _)| data.timestamp >= head);
+                        if !duplicate {
+                            samples.push_front((data.timestamp, data.price));
+                        }
+                    }
+                }
+                Ok(Ok(None)) => {}
+                _ => return Err(Error::PriceUnavailable),
+            }
+            if ts < res {
+                break;
+            }
+            ts -= res;
+        }
+
+        let count = samples.len();
+        if count < config.min_samples {
+            return Err(Error::StalePrice);
+        }
+        // Gap checks, all three kinds (issue #27 step 3): window start to
+        // first sample, every consecutive pair, last sample to close_time.
+        let (first_ts, _) = samples.get(0).unwrap();
+        let (last_ts, _) = samples.get(count - 1).unwrap();
+        if first_ts - start > config.max_gap || close_time - last_ts > config.max_gap {
+            return Err(Error::StalePrice);
+        }
+        for i in 1..count {
+            let (prev, _) = samples.get(i - 1).unwrap();
+            let (next, _) = samples.get(i).unwrap();
+            if next - prev > config.max_gap {
+                return Err(Error::StalePrice);
+            }
+        }
+
+        let mut weighted_sum: i128 = 0;
+        let mut total_weight: u64 = 0;
+        for i in 0..count {
+            let (sample_ts, sample_price) = samples.get(i).unwrap();
+            let next_ts = if i + 1 < count {
+                samples.get(i + 1).unwrap().0
+            } else {
+                close_time.saturating_add(1)
+            };
+            // dt >= 1 always: timestamps are strictly ascending and
+            // sample_ts <= close_time < close_time + 1.
+            let dt = next_ts - sample_ts;
+            total_weight = total_weight.checked_add(dt).ok_or(Error::InvalidPrice)?;
+            let term = sample_price
+                .checked_mul(dt as i128)
+                .ok_or(Error::InvalidPrice)?;
+            weighted_sum = weighted_sum.checked_add(term).ok_or(Error::InvalidPrice)?;
+        }
+        let twap = weighted_sum
+            .checked_div(total_weight as i128)
+            .ok_or(Error::InvalidPrice)?;
+        let outcome = Self::compare_price(&config.direction, twap, config.threshold);
+        Ok((twap, count, first_ts, last_ts, outcome))
+    }
+
+    /// Settles a [`TwapConfig`] market: same lifecycle preconditions as
+    /// `settle_scaled`, then the shared `settle_price` finalize with the
+    /// averaged price stamped at the newest sample, alongside the dedicated
+    /// [`TwapResolution`] event (the dual-event pattern #26 established with
+    /// [`PriceResolutionScaled`]). TWAP markets do not use `snapshot_price`:
+    /// snapshots pin a single record, which is exactly what issue #27
+    /// exists to avoid.
+    fn settle_twap(
+        env: &Env,
+        market_core: &Address,
+        market_id: u64,
+        config: &TwapConfig,
+    ) -> Result<Outcome, Error> {
+        let market = MarketCoreClient::new(env, market_core).get_market(&market_id);
+        if env.ledger().timestamp() < market.close_time {
+            return Err(Error::MarketNotClosed);
+        }
+        let (twap, samples, first_ts, last_ts, outcome) =
+            Self::twap_outcome(env, config, market.close_time)?;
+        Self::settle_price(
+            env,
+            market_core,
+            market_id,
+            &outcome,
+            &PriceData {
+                price: twap,
+                timestamp: last_ts,
+            },
+            false,
+        )?;
+        TwapResolution {
+            market_id,
+            twap,
+            samples,
+            first_ts,
+            last_ts,
+            outcome: outcome.clone(),
+        }
+        .publish(env);
+        Ok(outcome)
+    }
+
     /// The live-read outcome of a [`ScaledPriceConfig`] rule: grid-aligned
     /// feed read, the feed's `decimals()`, and both sides rescaled to
     /// `max(feed_decimals, threshold_decimals)`. Returns the outcome, the raw
@@ -1413,9 +1729,9 @@ impl Resolver {
         Ok((outcome, data, feed_decimals, threshold_scaled))
     }
 
-    /// The committed price rule's outcome at `close_time`, covering all three
-    /// price shapes (legacy `Price`, the `Hybrid` price leg, and
-    /// `PriceScaled`). Guardian and availability paths use it so "feed
+    /// The committed price rule's outcome at `close_time`, covering all four
+    /// price shapes (legacy `Price`, the `Hybrid` price leg, `PriceScaled`
+    /// and `PriceTwap`). Guardian and availability paths use it so "feed
     /// unusable" is one uniform check; snapshot precedence works exactly as
     /// in `resolve_price` for the legacy shapes.
     fn committed_price_outcome(
@@ -1434,6 +1750,17 @@ impl Resolver {
             let (outcome, data, _feed_decimals, _threshold_scaled) =
                 Self::scaled_price_outcome(env, &s, close_time)?;
             return Ok((outcome, data, false));
+        }
+        if let Some(t) = storage.get::<_, TwapConfig>(&DataKey::PriceTwap(market_id)) {
+            let (twap, _n, _first, last, outcome) = Self::twap_outcome(env, &t, close_time)?;
+            return Ok((
+                outcome,
+                PriceData {
+                    price: twap,
+                    timestamp: last,
+                },
+                false,
+            ));
         }
         Err(Error::WrongMode)
     }
@@ -1458,7 +1785,7 @@ impl Resolver {
         }
         let (outcome, data, feed_decimals, threshold_scaled) =
             Self::scaled_price_outcome(env, config, market.close_time)?;
-        Self::settle_price(env, market_core, market_id, &outcome, &data, false);
+        Self::settle_price(env, market_core, market_id, &outcome, &data, false)?;
         PriceResolutionScaled {
             market_id,
             raw_price: data.price,
@@ -1581,7 +1908,15 @@ impl Resolver {
         let mode = Self::expiry_mode(&env, market_id);
         match mode {
             ExpiryMode::Price => {
-                if let Ok(scaled) =
+                if let Ok(twap) = Self::load::<TwapConfig>(&env, DataKey::PriceTwap(market_id)) {
+                    match Self::settle_twap(&env, &market_core, market_id, &twap) {
+                        Ok(_) => return Ok(()),
+                        // Same uniform feed-unusable set as scaled/legacy
+                        // below (issue #27 mirrors #26 here).
+                        Err(Error::PriceUnavailable | Error::StalePrice | Error::InvalidPrice) => {}
+                        Err(other) => return Err(other),
+                    }
+                } else if let Ok(scaled) =
                     Self::load::<ScaledPriceConfig>(&env, DataKey::PriceScaled(market_id))
                 {
                     match Self::settle_scaled(&env, &market_core, market_id, &scaled) {
@@ -1995,6 +2330,7 @@ impl Resolver {
         let storage = env.storage().persistent();
         if storage.has(&DataKey::Price(market_id))
             || storage.has(&DataKey::PriceScaled(market_id))
+            || storage.has(&DataKey::PriceTwap(market_id))
             || (storage.has(&DataKey::Hybrid(market_id))
                 && Self::resolution_state(env, market_id) != ResolutionState::HybridFallbackOpen)
         {
@@ -2483,9 +2819,9 @@ impl Resolver {
 
     /// The price rule of a price or hybrid market. Signer-mode markets are
     /// `WrongMode`; markets with no revealed spec `MarketNotConfigured`.
-    /// Scaled markets are `WrongMode` too: `snapshot_price`/`preview_price`
-    /// work on the raw `PriceConfig` shape only (issue #37 will extend
-    /// snapshots).
+    /// Scaled (issue #26) and TWAP (issue #27) markets are `WrongMode` too:
+    /// `snapshot_price`/`preview_price` work on the raw `PriceConfig` shape
+    /// only (issue #37 will extend snapshots).
     fn price_config(env: &Env, market_id: u64) -> Result<PriceConfig, Error> {
         let storage = env.storage().persistent();
         if let Some(cfg) = storage.get(&DataKey::Price(market_id)) {
@@ -2494,7 +2830,9 @@ impl Resolver {
         if let Some(hybrid) = storage.get::<_, HybridConfig>(&DataKey::Hybrid(market_id)) {
             return Ok(hybrid.price);
         }
-        if storage.has(&DataKey::PriceScaled(market_id)) {
+        if storage.has(&DataKey::PriceScaled(market_id))
+            || storage.has(&DataKey::PriceTwap(market_id))
+        {
             return Err(Error::WrongMode);
         }
         match Self::signer_authority(env, market_id) {
@@ -2545,6 +2883,7 @@ impl Resolver {
         let storage = env.storage().persistent();
         if storage.has(&DataKey::Price(market_id))
             || storage.has(&DataKey::PriceScaled(market_id))
+            || storage.has(&DataKey::PriceTwap(market_id))
             || storage.has(&DataKey::Signers(market_id))
             || storage.has(&DataKey::WeightedKeys(market_id))
             || storage.has(&DataKey::Disputable(market_id))
@@ -2662,6 +3001,53 @@ impl Resolver {
     fn store_scaled_rule(env: &Env, market_id: u64, cfg: &ScaledPriceConfig) {
         let storage = env.storage().persistent();
         let key = DataKey::PriceScaled(market_id);
+        storage.set(&key, cfg);
+        storage.extend_ttl(&key, BUMP_THRESHOLD, BUMP_TO);
+        if let Some((_, policy)) = Self::evidence_config_internal(env) {
+            let p_key = DataKey::EvidencePolicy(market_id);
+            storage.set(&p_key, &policy);
+            storage.extend_ttl(&p_key, BUMP_THRESHOLD, BUMP_TO);
+        }
+        Self::set_state(env, market_id, ResolutionState::Unconfigured);
+    }
+
+    /// Issue #27 counterpart of [`validate_scaled_rule`] for the TWAP mode,
+    /// plus the live feasibility check described in
+    /// [`register_twap_spec`]: the grid period is read from the feed at
+    /// registration, so an infeasible `window`/`min_samples` pair for that
+    /// grid (or an unreachable/zero-period feed) fails before any
+    /// commitment is spent. Static violations and infeasible slot counts
+    /// are `InvalidConfig`; a trapping reflector is `PriceUnavailable`.
+    fn validate_twap_rule(env: &Env, cfg: &TwapConfig) -> Result<(), Error> {
+        let static_ok = cfg.window > 0
+            && cfg.min_samples >= 2
+            && cfg.max_gap > 0
+            && cfg.max_gap <= cfg.window
+            && cfg.threshold >= 0;
+        if !static_ok {
+            return Err(Error::InvalidConfig);
+        }
+        let client = ReflectorPriceClient::new(env, &cfg.reflector);
+        let Ok(Ok(resolution)) = client.try_resolution() else {
+            return Err(Error::PriceUnavailable);
+        };
+        if resolution == 0 {
+            // A zero-period feed divides by zero at resolve time; the market
+            // cannot ever sample it on a grid. Reject at reveal (issue #27
+            // step 2: catch unresolvable markets early).
+            return Err(Error::InvalidConfig);
+        }
+        let slots = cfg.window / resolution as u64;
+        if slots > MAX_TWAP_SAMPLES as u64 || (cfg.min_samples as u64) > slots {
+            return Err(Error::InvalidConfig);
+        }
+        Ok(())
+    }
+
+    /// Issue #27 counterpart of [`store_scaled_rule`] for the TWAP mode.
+    fn store_twap_rule(env: &Env, market_id: u64, cfg: &TwapConfig) {
+        let storage = env.storage().persistent();
+        let key = DataKey::PriceTwap(market_id);
         storage.set(&key, cfg);
         storage.extend_ttl(&key, BUMP_THRESHOLD, BUMP_TO);
         if let Some((_, policy)) = Self::evidence_config_internal(env) {
@@ -2906,6 +3292,7 @@ mod test {
     const MOCK_DECIMALS: u32 = 1;
     const MOCK_RESOLUTION: u32 = 2;
     const MOCK_PANIC: u32 = 3;
+    const MOCK_NEAREST: u32 = 4;
 
     #[contractimpl]
     impl Sep40Mock {
@@ -2916,6 +3303,13 @@ mod test {
 
         pub fn set_panic(env: Env, on: bool) {
             env.storage().instance().set(&MOCK_PANIC, &on);
+        }
+
+        /// Deviate from SEP-40 exactness: `price(asset, ts)` then answers
+        /// with the newest stored record at or before `ts` (issue #27's
+        /// "some implementations return the nearest earlier record" edge).
+        pub fn set_nearest(env: Env, on: bool) {
+            env.storage().instance().set(&MOCK_NEAREST, &on);
         }
 
         /// Replaces the feed's history for `asset`. Records are only findable
@@ -2962,12 +3356,25 @@ mod test {
         }
 
         /// SEP-40 exactness: `Some` only when `timestamp` names a stored
-        /// record of this asset.
+        /// record of this asset. Under `set_nearest(true)` the newest
+        /// record at or before `timestamp` answers instead (issue #27's
+        /// duplicate-timestamp edge).
         pub fn price(env: Env, asset: OracleAsset, timestamp: u64) -> Option<PriceData> {
             Self::guard(&env);
-            Self::records(&env, &asset)
-                .iter()
-                .find(|record| record.timestamp == timestamp)
+            let nearest: bool = env.storage().instance().get(&MOCK_NEAREST).unwrap_or(false);
+            let records = Self::records(&env, &asset);
+            if nearest {
+                let mut best: Option<PriceData> = None;
+                for record in records.iter() {
+                    if record.timestamp <= timestamp
+                        && best.as_ref().is_none_or(|b| record.timestamp > b.timestamp)
+                    {
+                        best = Some(record);
+                    }
+                }
+                return best;
+            }
+            records.iter().find(|record| record.timestamp == timestamp)
         }
 
         pub fn lastprice(env: Env, asset: OracleAsset) -> Option<PriceData> {
@@ -3179,6 +3586,109 @@ mod test {
             },
             scaled,
         )
+    }
+
+    /// Issue #27 counterpart of [`scaled_fixture_at`]: the market's
+    /// `resolution_hash` commits to `twap_spec_hash(cfg)`. The returned
+    /// `Fixture.spec` is a legacy `Price` placeholder these tests never
+    /// register; only the revealed TWAP config matches the commitment.
+    fn twap_fixture_at(
+        close_time: u64,
+        spec_fn: impl FnOnce(&Env, &Address, &Address, &Address) -> TwapConfig,
+    ) -> (Fixture, TwapConfig) {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().set_timestamp(1_000);
+        env.ledger().set_network_id(NETWORK_ID);
+
+        let admin = Address::generate(&env);
+        let creator = Address::generate(&env);
+        let signer_a = Address::generate(&env);
+        let signer_b = Address::generate(&env);
+        let treasury = Address::generate(&env);
+        let resolver_id = Address::generate(&env);
+        let reflector_id = env.register(Sep40Mock, ());
+
+        let collateral = env.register_stellar_asset_contract_v2(admin.clone());
+        let token = StellarAssetClient::new(&env, &collateral.address());
+        token.mint(&creator, &(1_000 * 10_000_000_i128));
+
+        let twap_cfg = spec_fn(&env, &reflector_id, &signer_a, &signer_b);
+        let spec = ResolutionSpec::Price(price_spec(&env, &reflector_id));
+        let market_core_id = env.register(
+            market_core::WASM,
+            (
+                admin.clone(),
+                collateral.address(),
+                treasury.clone(),
+                resolver_id.clone(),
+                100u32,
+                // Protocol keeps the whole fee; resolver tests do no splits.
+                10_000u32,
+            ),
+        );
+        let resolution_hash = twap_spec_hash(&env, &twap_cfg);
+        let market_core = MarketCoreClient::new(&env, &market_core_id);
+        let market_id = market_core.create_market(
+            &creator,
+            &BytesN::from_array(&env, &[42u8; 32]),
+            &resolution_hash,
+            &soroban_sdk::String::from_str(&env, "ipfs://resolver-test"),
+            &Category::Crypto,
+            &close_time,
+            &(100 * 10_000_000_i128),
+            &5000u32,
+        );
+
+        env.register_at(
+            &resolver_id,
+            Resolver,
+            ResolverArgs::__constructor(&admin, &market_core_id),
+        );
+        let resolver = ResolverClient::new(&env, &resolver_id);
+
+        (
+            Fixture {
+                env,
+                admin,
+                resolver,
+                resolver_id,
+                market_core,
+                market_id,
+                signer_a,
+                signer_b,
+                reflector_id,
+                spec,
+            },
+            twap_cfg,
+        )
+    }
+
+    /// [`twap_fixture_at`] at the default `close_time` of 2_000.
+    fn twap_fixture(
+        spec_fn: impl FnOnce(&Env, &Address, &Address, &Address) -> TwapConfig,
+    ) -> (Fixture, TwapConfig) {
+        twap_fixture_at(2_000, spec_fn)
+    }
+
+    fn twap_price_spec(
+        env: &Env,
+        reflector: &Address,
+        threshold: i128,
+        direction: PriceDirection,
+        window: u64,
+        min_samples: u32,
+        max_gap: u64,
+    ) -> TwapConfig {
+        TwapConfig {
+            reflector: reflector.clone(),
+            asset: OracleAsset::Other(Symbol::new(env, "XLM")),
+            threshold,
+            direction,
+            window,
+            min_samples,
+            max_gap,
+        }
     }
 
     fn price_spec(env: &Env, reflector: &Address) -> PriceConfig {
@@ -6073,6 +6583,693 @@ mod test {
             g.resolver.try_preview_price(&g.market_id),
             Err(Ok(Error::WrongMode))
         );
+    }
+
+    // ----- TWAP resolution specs (issue #27) -------------------------------
+
+    /// Registers `spec` on a fresh TWAP market after configuring the mock
+    /// feed's `resolution()`, and returns the fixture. `min_samples >= 2`
+    /// and `window / resolution <= MAX_TWAP_SAMPLES` feasibility is checked
+    /// at reveal, so the feed config must be in place first.
+    fn arm_twap(f: &Fixture, spec: &TwapConfig) {
+        f.resolver.register_twap_spec(&f.market_id, spec);
+    }
+
+    /// Decodes the `from_end`-th (0 = newest) resolver event payload into a
+    /// field map, mirroring the scaled-event test's decoding.
+    fn twap_event_fields(f: &Fixture, from_end: u32) -> soroban_sdk::Map<Symbol, soroban_sdk::Val> {
+        use soroban_sdk::{xdr, TryFromVal};
+        let events = f.env.events().all().filter_by_contract(&f.resolver_id);
+        let events = events.events();
+        let event = events[events.len() - 1 - from_end as usize].clone();
+        let xdr::ContractEventBody::V0(body) = event.body;
+        let data = soroban_sdk::Val::try_from_val(&f.env, &body.data).unwrap();
+        soroban_sdk::Map::try_from_val(&f.env, &data).unwrap()
+    }
+
+    /// The standard feasible TWAP config used across these tests: 100 s
+    /// grid, 1000 s window, two samples minimum, and `max_gap` wide enough
+    /// that only the test's own history shapes can trip the gap rules.
+    fn twap_standard_spec(env: &Env, reflector: &Address) -> TwapConfig {
+        twap_price_spec(env, reflector, 1_000, PriceDirection::Above, 1_000, 2, 900)
+    }
+
+    #[test]
+    fn twap_resolves_yes_when_average_above_threshold_despite_last_print_below() {
+        // The manipulation case from the issue's motivation, inverted: the
+        // newest print (100) is far below the 1000 threshold, but the
+        // window's time-weighted average is ~1997 -> Yes. A single-price
+        // market would have answered No on this history.
+        let (f, spec) = twap_fixture(|env, reflector, _a, _b| {
+            twap_price_spec(env, reflector, 1_000, PriceDirection::Above, 1_000, 3, 600)
+        });
+        Sep40MockClient::new(&f.env, &f.reflector_id).set_config(&14, &100);
+        feed_history(
+            &f,
+            [
+                PriceData {
+                    price: 2_000,
+                    timestamp: 1_200,
+                },
+                PriceData {
+                    price: 2_000,
+                    timestamp: 1_800,
+                },
+                PriceData {
+                    price: 100,
+                    timestamp: 2_000,
+                },
+            ],
+        );
+        arm_twap(&f, &spec);
+        f.env.ledger().set_timestamp(2_000);
+        // 2000*600 + 2000*200 + 100*1 = 1_600_100 over 801 s -> 1997.
+        assert_eq!(f.resolver.resolve_twap(&f.market_id), Outcome::Yes);
+    }
+
+    #[test]
+    fn twap_resolves_no_when_single_spike_at_close() {
+        // 9000 at the closing slot cannot carry the ~111 average over the
+        // 1000 threshold: the spike that would decide a single-print market
+        // is diluted by the window.
+        let (f, spec) = twap_fixture(|env, reflector, _a, _b| {
+            twap_price_spec(env, reflector, 1_000, PriceDirection::Above, 1_000, 3, 600)
+        });
+        Sep40MockClient::new(&f.env, &f.reflector_id).set_config(&14, &100);
+        feed_history(
+            &f,
+            [
+                PriceData {
+                    price: 100,
+                    timestamp: 1_200,
+                },
+                PriceData {
+                    price: 100,
+                    timestamp: 1_800,
+                },
+                PriceData {
+                    price: 9_000,
+                    timestamp: 2_000,
+                },
+            ],
+        );
+        arm_twap(&f, &spec);
+        f.env.ledger().set_timestamp(2_000);
+        assert_eq!(f.resolver.resolve_twap(&f.market_id), Outcome::No);
+    }
+
+    #[test]
+    fn twap_rejects_insufficient_samples() {
+        // Two of the three required samples are present and every gap is
+        // within max_gap; only min_samples fails -> StalePrice, state
+        // untouched.
+        let (f, spec) = twap_fixture(|env, reflector, _a, _b| {
+            twap_price_spec(env, reflector, 1_000, PriceDirection::Above, 1_000, 3, 900)
+        });
+        Sep40MockClient::new(&f.env, &f.reflector_id).set_config(&14, &100);
+        feed_history(
+            &f,
+            [
+                PriceData {
+                    price: 500,
+                    timestamp: 1_900,
+                },
+                PriceData {
+                    price: 2_000,
+                    timestamp: 2_000,
+                },
+            ],
+        );
+        arm_twap(&f, &spec);
+        f.env.ledger().set_timestamp(2_000);
+        assert_eq!(
+            f.resolver.try_resolve_twap(&f.market_id),
+            Err(Ok(Error::StalePrice))
+        );
+        assert_eq!(
+            f.resolver.state(&f.market_id),
+            ResolutionState::Unconfigured
+        );
+        assert_eq!(
+            f.market_core.get_market(&f.market_id).status,
+            MarketStatus::Open
+        );
+    }
+
+    #[test]
+    fn twap_rejects_gap_larger_than_max_gap() {
+        // All three gap kinds independently: window start -> first sample,
+        // consecutive samples, last sample -> close_time. Each history
+        // satisfies min_samples and would otherwise resolve Yes.
+        let cases: [([PriceData; 2], &str); 3] = [
+            (
+                [
+                    PriceData {
+                        price: 2_000,
+                        timestamp: 1_200,
+                    },
+                    PriceData {
+                        price: 2_000,
+                        timestamp: 2_000,
+                    },
+                ],
+                "consecutive gap 800 > 300",
+            ),
+            (
+                [
+                    PriceData {
+                        price: 2_000,
+                        timestamp: 1_100,
+                    },
+                    PriceData {
+                        price: 2_000,
+                        timestamp: 1_200,
+                    },
+                ],
+                "tail gap 800 > 300",
+            ),
+            (
+                [
+                    PriceData {
+                        price: 2_000,
+                        timestamp: 1_900,
+                    },
+                    PriceData {
+                        price: 2_000,
+                        timestamp: 2_000,
+                    },
+                ],
+                "first gap 900 > 300",
+            ),
+        ];
+        for (records, note) in cases {
+            let (f, spec) = twap_fixture(|env, reflector, _a, _b| {
+                twap_price_spec(env, reflector, 1_000, PriceDirection::Above, 1_000, 2, 300)
+            });
+            Sep40MockClient::new(&f.env, &f.reflector_id).set_config(&14, &100);
+            feed_history(&f, records);
+            arm_twap(&f, &spec);
+            f.env.ledger().set_timestamp(2_000);
+            assert_eq!(
+                f.resolver.try_resolve_twap(&f.market_id),
+                Err(Ok(Error::StalePrice)),
+                "{note}"
+            );
+        }
+    }
+
+    #[test]
+    fn twap_weighting_exact_known_value() {
+        // Hand-computed 4-sample case (issue #27 step 4): samples at
+        // 1750/1850/1900/2000 on the 50 s grid, weights 100/50/100/1
+        // (last weight = close_time - last_ts + 1), sum 45_400 / 251 ->
+        // floored 180, and 180 AtOrAbove 180 is Yes (equality boundary of
+        // the floored average).
+        let (f, spec) = twap_fixture(|env, reflector, _a, _b| {
+            twap_price_spec(
+                env,
+                reflector,
+                180,
+                PriceDirection::AtOrAbove,
+                1_000,
+                4,
+                900,
+            )
+        });
+        Sep40MockClient::new(&f.env, &f.reflector_id).set_config(&14, &50);
+        feed_history(
+            &f,
+            [
+                PriceData {
+                    price: 100,
+                    timestamp: 1_750,
+                },
+                PriceData {
+                    price: 300,
+                    timestamp: 1_850,
+                },
+                PriceData {
+                    price: 200,
+                    timestamp: 1_900,
+                },
+                PriceData {
+                    price: 400,
+                    timestamp: 2_000,
+                },
+            ],
+        );
+        arm_twap(&f, &spec);
+        f.env.ledger().set_timestamp(2_000);
+        use soroban_sdk::TryFromVal;
+        assert_eq!(f.resolver.resolve_twap(&f.market_id), Outcome::Yes);
+        let fields = twap_event_fields(&f, 0);
+        assert_eq!(
+            i128::try_from_val(&f.env, &fields.get(Symbol::new(&f.env, "twap")).unwrap()).unwrap(),
+            180
+        );
+    }
+
+    #[test]
+    fn twap_overflow_returns_invalid_price() {
+        // i128::MAX samples cannot be summed even with dt = 1: the checked
+        // accumulate gives InvalidPrice and the market stays unresolved.
+        let (f, spec) = twap_fixture(|env, reflector, _a, _b| {
+            twap_price_spec(env, reflector, 1_000, PriceDirection::Above, 30, 2, 30)
+        });
+        Sep40MockClient::new(&f.env, &f.reflector_id).set_config(&14, &1);
+        feed_history(
+            &f,
+            [
+                PriceData {
+                    price: i128::MAX,
+                    timestamp: 1_999,
+                },
+                PriceData {
+                    price: i128::MAX,
+                    timestamp: 2_000,
+                },
+            ],
+        );
+        arm_twap(&f, &spec);
+        f.env.ledger().set_timestamp(2_000);
+        assert_eq!(
+            f.resolver.try_resolve_twap(&f.market_id),
+            Err(Ok(Error::InvalidPrice))
+        );
+        assert_eq!(
+            f.resolver.state(&f.market_id),
+            ResolutionState::Unconfigured
+        );
+    }
+
+    #[test]
+    fn twap_rejects_nonpositive_sample() {
+        // Same rule as #26 for single prints: a zeroed or negative record in
+        // the window poisons the average outright.
+        for price in [0_i128, -1, -2_500] {
+            let (f, spec) = twap_fixture(|env, reflector, _a, _b| {
+                twap_price_spec(env, reflector, 1_000, PriceDirection::Above, 1_000, 2, 900)
+            });
+            Sep40MockClient::new(&f.env, &f.reflector_id).set_config(&14, &100);
+            feed_history(
+                &f,
+                [
+                    PriceData {
+                        price,
+                        timestamp: 2_000,
+                    },
+                    PriceData {
+                        price: 2_000,
+                        timestamp: 1_900,
+                    },
+                ],
+            );
+            arm_twap(&f, &spec);
+            f.env.ledger().set_timestamp(2_000);
+            assert_eq!(
+                f.resolver.try_resolve_twap(&f.market_id),
+                Err(Ok(Error::InvalidPrice)),
+                "price {price}"
+            );
+        }
+    }
+
+    #[test]
+    fn register_twap_spec_infeasible_window_rejected() {
+        // Every registration-time rejection is InvalidConfig (issue #27
+        // step 2): static field rules, an over-wide slot count against
+        // MAX_TWAP_SAMPLES, an unreachable min_samples target, and a
+        // zero-period feed.
+        let cases: [(u32, fn(&Env, &Address) -> TwapConfig, &str); 7] = [
+            (
+                1_000,
+                |env, r| twap_price_spec(env, r, 1_000, PriceDirection::Above, 33_001, 2, 1_000),
+                "window/resolution 33 > MAX_TWAP_SAMPLES",
+            ),
+            (
+                100,
+                |env, r| twap_price_spec(env, r, 1_000, PriceDirection::Above, 500, 6, 500),
+                "min_samples 6 > 5 grid slots",
+            ),
+            (
+                100,
+                |env, r| twap_price_spec(env, r, 1_000, PriceDirection::Above, 1_000, 1, 900),
+                "min_samples below 2",
+            ),
+            (
+                100,
+                |env, r| twap_price_spec(env, r, 1_000, PriceDirection::Above, 1_000, 2, 0),
+                "max_gap 0",
+            ),
+            (
+                100,
+                |env, r| twap_price_spec(env, r, 1_000, PriceDirection::Above, 1_000, 2, 1_001),
+                "max_gap > window",
+            ),
+            (
+                100,
+                |env, r| twap_price_spec(env, r, -1, PriceDirection::Above, 1_000, 2, 900),
+                "negative threshold",
+            ),
+            (
+                100,
+                |env, r| twap_price_spec(env, r, 1_000, PriceDirection::Above, 0, 2, 1),
+                "zero window",
+            ),
+        ];
+        for (resolution, make, note) in cases {
+            let (f, spec) = twap_fixture(|env, reflector, _a, _b| make(env, reflector));
+            Sep40MockClient::new(&f.env, &f.reflector_id).set_config(&14, &resolution);
+            assert_eq!(
+                f.resolver.try_register_twap_spec(&f.market_id, &spec),
+                Err(Ok(Error::InvalidConfig)),
+                "{note}"
+            );
+        }
+
+        // A feed with resolution() of 0 divides by zero at resolve time;
+        // registration rejects it too.
+        let (f, spec) = twap_fixture(twap_standard_spec);
+        Sep40MockClient::new(&f.env, &f.reflector_id).set_config(&14, &0);
+        assert_eq!(
+            f.resolver.try_register_twap_spec(&f.market_id, &spec),
+            Err(Ok(Error::InvalidConfig))
+        );
+
+        // An unreachable reflector at registration is PriceUnavailable:
+        // feasibility needs the live grid period, so reveal fails cleanly
+        // instead of committing an unverifiable rule.
+        let (f, spec) = twap_fixture(twap_standard_spec);
+        Sep40MockClient::new(&f.env, &f.reflector_id).set_config(&14, &100);
+        Sep40MockClient::new(&f.env, &f.reflector_id).set_panic(&true);
+        assert_eq!(
+            f.resolver.try_register_twap_spec(&f.market_id, &spec),
+            Err(Ok(Error::PriceUnavailable))
+        );
+    }
+
+    #[test]
+    fn cannot_register_twap_when_price_spec_exists() {
+        // assert_unconfigured sees the third key both ways: a legacy price
+        // market cannot reveal a TWAP rule, and a TWAP market cannot reveal
+        // legacy or scaled rules (the double-registration hole #26 closed
+        // for PriceScaled, extended to PriceTwap).
+        let f = fixture(|env, reflector, _a, _b| ResolutionSpec::Price(price_spec(env, reflector)));
+        let ResolutionSpec::Price(spec) = f.spec.clone() else {
+            unreachable!()
+        };
+        f.resolver.register_price_spec(&f.market_id, &spec);
+        let twap = twap_standard_spec(&f.env, &f.reflector_id);
+        assert_eq!(
+            f.resolver.try_register_twap_spec(&f.market_id, &twap),
+            Err(Ok(Error::MarketAlreadyConfigured))
+        );
+
+        let (g, spec) = twap_fixture(twap_standard_spec);
+        Sep40MockClient::new(&g.env, &g.reflector_id).set_config(&14, &100);
+        g.resolver.register_twap_spec(&g.market_id, &spec);
+        let legacy = price_spec(&g.env, &g.reflector_id);
+        assert_eq!(
+            g.resolver.try_register_price_spec(&g.market_id, &legacy),
+            Err(Ok(Error::MarketAlreadyConfigured))
+        );
+        let scaled = scaled_price_spec(&g.env, &g.reflector_id, 20, 2, PriceDirection::Above, 10);
+        assert_eq!(
+            g.resolver
+                .try_register_scaled_price_spec(&g.market_id, &scaled),
+            Err(Ok(Error::MarketAlreadyConfigured))
+        );
+        // TWAP markets are WrongMode for the raw-price snapshot and preview
+        // helpers, which pin a single record.
+        g.env.ledger().set_timestamp(2_000);
+        assert_eq!(
+            g.resolver
+                .try_snapshot_price(&g.market_id, &Address::generate(&g.env)),
+            Err(Ok(Error::WrongMode))
+        );
+        assert_eq!(
+            g.resolver.try_preview_price(&g.market_id),
+            Err(Ok(Error::WrongMode))
+        );
+        // And resolve_twap is WrongMode on a legacy price market.
+        assert_eq!(
+            f.resolver.try_resolve_twap(&f.market_id),
+            Err(Ok(Error::WrongMode))
+        );
+    }
+
+    #[test]
+    fn resolve_twap_lifecycle() {
+        let (f, spec) = twap_fixture(|env, reflector, _a, _b| {
+            twap_price_spec(env, reflector, 1_000, PriceDirection::Above, 1_000, 2, 900)
+        });
+        Sep40MockClient::new(&f.env, &f.reflector_id).set_config(&14, &100);
+        feed_history(
+            &f,
+            [
+                PriceData {
+                    price: 2_000,
+                    timestamp: 1_900,
+                },
+                PriceData {
+                    price: 2_000,
+                    timestamp: 2_000,
+                },
+            ],
+        );
+        arm_twap(&f, &spec);
+        // Before close: MarketNotClosed.
+        assert_eq!(
+            f.resolver.try_resolve_twap(&f.market_id),
+            Err(Ok(Error::MarketNotClosed))
+        );
+        f.env.ledger().set_timestamp(2_000);
+        assert_eq!(f.resolver.resolve_twap(&f.market_id), Outcome::Yes);
+        assert_eq!(f.resolver.state(&f.market_id), ResolutionState::Finalized);
+        assert_eq!(
+            f.market_core.get_market(&f.market_id).status,
+            MarketStatus::Resolved(Outcome::Yes)
+        );
+        // Terminal after finalize.
+        assert_eq!(
+            f.resolver.try_resolve_twap(&f.market_id),
+            Err(Ok(Error::AlreadyFinalized))
+        );
+    }
+
+    #[test]
+    fn resolve_price_dispatches_twap_markets() {
+        // Parity with the #26 scaled dispatch: a revealed TWAP market also
+        // resolves through `resolve_price`, so callers need no mode probing.
+        let (f, spec) = twap_fixture(|env, reflector, _a, _b| {
+            twap_price_spec(env, reflector, 1_000, PriceDirection::Above, 1_000, 2, 900)
+        });
+        Sep40MockClient::new(&f.env, &f.reflector_id).set_config(&14, &100);
+        feed_history(
+            &f,
+            [
+                PriceData {
+                    price: 2_000,
+                    timestamp: 1_900,
+                },
+                PriceData {
+                    price: 2_000,
+                    timestamp: 2_000,
+                },
+            ],
+        );
+        arm_twap(&f, &spec);
+        f.env.ledger().set_timestamp(2_000);
+        assert_eq!(f.resolver.resolve_price(&f.market_id), Outcome::Yes);
+        assert_eq!(f.resolver.state(&f.market_id), ResolutionState::Finalized);
+    }
+
+    #[test]
+    fn twap_emits_resolution_events_with_avg_and_window() {
+        use soroban_sdk::TryFromVal;
+        let (f, spec) = twap_fixture(|env, reflector, _a, _b| {
+            twap_price_spec(env, reflector, 1_000, PriceDirection::Above, 1_000, 3, 600)
+        });
+        Sep40MockClient::new(&f.env, &f.reflector_id).set_config(&14, &100);
+        feed_history(
+            &f,
+            [
+                PriceData {
+                    price: 2_000,
+                    timestamp: 1_200,
+                },
+                PriceData {
+                    price: 2_000,
+                    timestamp: 1_800,
+                },
+                PriceData {
+                    price: 100,
+                    timestamp: 2_000,
+                },
+            ],
+        );
+        arm_twap(&f, &spec);
+        f.env.ledger().set_timestamp(2_000);
+        assert_eq!(f.resolver.resolve_twap(&f.market_id), Outcome::Yes);
+
+        // Newest event: TwapResolution with the full averaging report.
+        let fields = twap_event_fields(&f, 0);
+        let get = |name: &str| fields.get(Symbol::new(&f.env, name)).unwrap();
+        assert_eq!(i128::try_from_val(&f.env, &get("twap")).unwrap(), 1_997);
+        assert_eq!(u32::try_from_val(&f.env, &get("samples")).unwrap(), 3);
+        assert_eq!(u64::try_from_val(&f.env, &get("first_ts")).unwrap(), 1_200);
+        assert_eq!(u64::try_from_val(&f.env, &get("last_ts")).unwrap(), 2_000);
+        assert_eq!(
+            Outcome::try_from_val(&f.env, &get("outcome")).unwrap(),
+            Outcome::Yes
+        );
+        // The unchanged PriceResolutionV2 compatibility event carries the
+        // averaged price stamped at the newest sample.
+        let compat = twap_event_fields(&f, 1);
+        assert_eq!(
+            i128::try_from_val(&f.env, &compat.get(Symbol::new(&f.env, "price")).unwrap()).unwrap(),
+            1_997
+        );
+        assert_eq!(
+            u64::try_from_val(
+                &f.env,
+                &compat.get(Symbol::new(&f.env, "price_timestamp")).unwrap()
+            )
+            .unwrap(),
+            2_000
+        );
+        assert!(!bool::try_from_val(
+            &f.env,
+            &compat.get(Symbol::new(&f.env, "from_snapshot")).unwrap()
+        )
+        .unwrap());
+    }
+
+    #[test]
+    fn twap_read_cap_bounds_window_of_missing_records() {
+        // The loop caps *reads*, not found samples: registration is feasible
+        // on the 1000 s grid (30 slots), the feed then narrows to 100 s
+        // (300 slots) and answers nothing. Without the cap the walk would
+        // inspect every slot of the window; with it, resolution stops after
+        // MAX_TWAP_SAMPLES calls and fails min_samples with StalePrice.
+        let (f, spec) = twap_fixture_at(60_000, |env, reflector, _a, _b| {
+            twap_price_spec(
+                env,
+                reflector,
+                1_000,
+                PriceDirection::Above,
+                30_000,
+                2,
+                30_000,
+            )
+        });
+        Sep40MockClient::new(&f.env, &f.reflector_id).set_config(&14, &1_000);
+        arm_twap(&f, &spec);
+        Sep40MockClient::new(&f.env, &f.reflector_id).set_config(&14, &100);
+        f.env.ledger().set_timestamp(60_000);
+        assert_eq!(
+            f.resolver.try_resolve_twap(&f.market_id),
+            Err(Ok(Error::StalePrice))
+        );
+        assert!(MAX_TWAP_SAMPLES < 300);
+    }
+
+    #[test]
+    fn twap_ignores_duplicate_records_from_nearest_earlier_feed() {
+        // Issue #27 edge: a feed answering `price(asset, ts)` with the
+        // newest record at or before ts returns the 1800 record for both
+        // the 1900 and the 1800 queries. Each timestamp must be counted
+        // once: weights 200 (for 1800) and 1 (for 2000), giving
+        // (500*200 + 1000*1) / 201 = 502, not a three-sample average.
+        let (f, spec) = twap_fixture(|env, reflector, _a, _b| {
+            twap_price_spec(
+                env,
+                reflector,
+                180,
+                PriceDirection::AtOrAbove,
+                1_000,
+                2,
+                900,
+            )
+        });
+        let feed = Sep40MockClient::new(&f.env, &f.reflector_id);
+        feed.set_config(&14, &100);
+        feed.set_nearest(&true);
+        feed_history(
+            &f,
+            [
+                PriceData {
+                    price: 500,
+                    timestamp: 1_800,
+                },
+                PriceData {
+                    price: 1_000,
+                    timestamp: 2_000,
+                },
+            ],
+        );
+        arm_twap(&f, &spec);
+        f.env.ledger().set_timestamp(2_000);
+        use soroban_sdk::TryFromVal;
+        assert_eq!(f.resolver.resolve_twap(&f.market_id), Outcome::Yes);
+        let fields = twap_event_fields(&f, 0);
+        assert_eq!(
+            i128::try_from_val(&f.env, &fields.get(Symbol::new(&f.env, "twap")).unwrap()).unwrap(),
+            502
+        );
+        assert_eq!(
+            u32::try_from_val(&f.env, &fields.get(Symbol::new(&f.env, "samples")).unwrap())
+                .unwrap(),
+            2
+        );
+    }
+
+    #[test]
+    fn expire_resolves_twap_market_when_feed_is_valid() {
+        // Expiry prefers resolution over voiding, as for the other price
+        // shapes: at the deadline with a live feed the market settles on
+        // its TWAP instead of expiring.
+        let (f, spec) = twap_fixture(|env, reflector, _a, _b| {
+            twap_price_spec(env, reflector, 1_000, PriceDirection::Above, 1_000, 2, 900)
+        });
+        Sep40MockClient::new(&f.env, &f.reflector_id).set_config(&14, &100);
+        feed_history(
+            &f,
+            [
+                PriceData {
+                    price: 2_000,
+                    timestamp: 1_900,
+                },
+                PriceData {
+                    price: 2_000,
+                    timestamp: 2_000,
+                },
+            ],
+        );
+        arm_twap(&f, &spec);
+        f.env.ledger().set_timestamp(DEADLINE);
+        f.resolver.expire_market(&f.market_id);
+        assert_eq!(
+            f.market_core.get_market(&f.market_id).status,
+            MarketStatus::Resolved(Outcome::Yes)
+        );
+        assert_eq!(f.resolver.state(&f.market_id), ResolutionState::Finalized);
+    }
+
+    #[test]
+    fn expire_voids_twap_market_whose_feed_traps() {
+        // A dead feed must not lock TWAP collateral behind guardian-void
+        // forever: the settle attempt fails feed-unusable and the uniform
+        // ExpiryMode::Price void path applies.
+        let (f, spec) = twap_fixture(|env, reflector, _a, _b| {
+            twap_price_spec(env, reflector, 1_000, PriceDirection::Above, 1_000, 2, 900)
+        });
+        Sep40MockClient::new(&f.env, &f.reflector_id).set_config(&14, &100);
+        arm_twap(&f, &spec);
+        Sep40MockClient::new(&f.env, &f.reflector_id).set_panic(&true);
+        f.env.ledger().set_timestamp(DEADLINE);
+        f.resolver.expire_market(&f.market_id);
+        assert_expired_event(&f, ExpiryMode::Price);
     }
 }
 
