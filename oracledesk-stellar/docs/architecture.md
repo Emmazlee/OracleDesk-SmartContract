@@ -17,18 +17,19 @@ natively unit-testable and mirrored line-for-line in
 [`model/fpmm_model.py`](../model/fpmm_model.py) and
 `agents/core/fpmm.ts` for property testing and off-chain quoting.
 
-**Collateral decimals.** `market-core` reads the collateral token's
-`decimals()` once in `__constructor` (rejecting anything above 18 with
-`UnsupportedDecimals`) and stores it under `DataKey::Decimals`; it is
-exposed through `get_config().decimals`. The economic bounds are derived
-from it rather than hardcoded: `min_seed = 100 * 10^d` and
-`max_sets = 1e8 * 10^d` (`math::bounds_for_decimals`), so a 7-decimal
-Classic asset and an 18-decimal Soroban token both get sensible floors and
-market caps. `mul_div_floor` / `mul_div_ceil` use 256-bit intermediates
-(`math::wide`, a no_std `u128x2` widening multiply and divide), so a
-result that fits in `i128` is always returned exactly regardless of
-decimals. The Python and TypeScript mirrors implement the same bounds and
-reject results beyond `i128`, so off-chain quotes agree with the contract.
+**Decimals.** The collateral token's `decimals()` is read once in
+`__constructor` (rejecting anything above 18 with `UnsupportedDecimals`) and
+stored in instance storage; `get_config` exposes it as `Config.decimals`.
+The market-size bounds are derived from it rather than hardcoded:
+`min_seed = 100 * 10^d` and `max_sets = 1e8 * 10^d` (`math::bounds_for_decimals`),
+so a 7-decimal USDC market keeps the old 100 USDC / 100M USDC limits while an
+18-decimal token gets 100 / 1e26 raw units. Because `max_sets` can now reach
+1e26, `mul_div_floor` / `mul_div_ceil` use 256-bit intermediates (a no_std
+`u128x2` widening multiply/divide in `math.rs`) so a result that fits in
+`i128` is always returned exactly, regardless of the product's size.
+The widening helpers live in a `no_std` `wide` module inside `math.rs` with
+no `soroban_sdk` imports, so the arithmetic stays natively testable and the
+Python/TypeScript mirrors can reproduce it bit-for-bit.
 
 **Solvency invariant** (holds after every state transition — see the test
 suite for the ones exercised): the contract's own SEP-41 token balance for a
@@ -36,6 +37,11 @@ market equals `sets_minted + fees_accrued + lp_fees` (`fees_accrued` is the
 protocol's pending share of trading fees, `lp_fees` the creator's — see the
 fee split below), and `reserve_yes + Σ(user yes positions) == sets_minted`
 (symmetrically for `no`).
+
+**Market size bound.** A market's seed and total sets are bounded by
+`max_sets = 1e8 * 10^decimals` (100M tokens at the collateral's precision);
+`buy` reverts with `MarketTooLarge` past it. `settle_value` sums YES+NO with
+checked addition, so the bound also keeps settlement arithmetic in `i128`.
 
 **Fee split and recipient snapshot.** `create_market` snapshots a
 `FeeTerms { recipient, protocol_share_bps }` side entry per market, so
@@ -101,15 +107,6 @@ zero entries" rule.
 
 **Resolution commitment**: `resolution_hash` is fixed at `create_market`
 time — see [ADR 0001](adr/0001-resolution-commitment.md) for why.
-
-**Market size bound.** A market's `sets_minted` is capped at
-`max_sets = 1e8 * 10^decimals` (checked on `create_market`'s seed and on
-every `buy`); with 18 decimals that is `1e26` raw units. Sums of two such
-quantities stay far below `i128::MAX`, and the multiply-divide helpers no
-longer rely on that headroom because they widen to 256 bits internally.
-Products of two such quantities reach `1e52`, which exceeds `i128::MAX`;
-that is exactly why `mul_div_floor` / `mul_div_ceil` widen to 256-bit
-intermediates rather than depending on the old `1e30` headroom argument.
 
 Lifecycle: `create_market` → `buy`/`sell` (while open; `buy_v2`/`sell_v2`
 with bounds) → `resolve` or `void_market` (resolver-only) → `redeem` per
@@ -556,9 +553,6 @@ no admin.
   (`quote_buy`) immediately before submitting and derives non-zero
   `min_shares_out` / `limit_price_bps` bounds plus a deadline from it.
 - **packages/bindings/**: generated TypeScript clients (`scripts/gen-bindings.sh`).
-  `Config` gained a `decimals` field, so consumers must re-sync their
-  generated bindings after upgrading `market-core`; the XDR shape changed
-  and old bindings will not decode the new `get_config` result.
 
 ## Known limitations (see docs/STATUS.md for the full, current list)
 
