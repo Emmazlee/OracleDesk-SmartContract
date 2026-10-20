@@ -4,6 +4,8 @@ members = [
     "contracts/resolver",
     "contracts/reasoning-registry",
     "contracts/treasury",
+    "contracts/timelock",
+    "contracts/router",
 ]
 resolver = "2"
 

@@ -109,8 +109,9 @@ it as the old treasury's successor (`set_successor`, admin), then calls
 admin-gated — the agent cannot invoke them — and the destination is fixed
 to the recorded successor, so migration cannot send value anywhere else.
 Re-running is safe. It deliberately does **not** rewire market-core
-(`set_treasury`); that cutover changes the fee recipient for future markets
-and stays a separate operator step (the script prints the exact command).
+(`propose_treasury` + the treasury's `accept_market_core_role`); that cutover
+changes the fee recipient for future markets
+and stays a separate operator step (the script prints the exact commands).
 See `docs/architecture.md` for the full auth model.
 
 ## Repository layout

@@ -14,7 +14,12 @@
 # reveal it, so it is written to deployments/specs/<resolution_hash>.json and
 # read back BEFORE the market is created: if that fails, no market is created.
 #
-# Usage: scripts/seed-market.sh [seed_amount_stroops] [initial_yes_bps] [close_in_seconds]
+# By default the market is created and its spec revealed atomically through
+# treasury.agent_create_market_and_reveal (#64), so a crash can't leave an
+# unresolvable market. Pass --commit-only to keep the legacy two-step
+# behaviour (agent_create_market, then register_spec_v2 separately).
+#
+# Usage: scripts/seed-market.sh [--commit-only] [seed_amount_stroops] [initial_yes_bps] [close_in_seconds]
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
@@ -24,6 +29,17 @@ DEPLOYER_KEY=oracledesk-deployer
 AGENT_KEY=oracledesk-agent
 DEPLOYMENTS=deployments/testnet.json
 SPECS_DIR=deployments/specs
+ATOMIC=true
+
+# Allow --commit-only anywhere in the argument list.
+ARGS=()
+for arg in "$@"; do
+  case "$arg" in
+    --commit-only) ATOMIC=false ;;
+    *) ARGS+=("$arg") ;;
+  esac
+done
+set -- "${ARGS[@]:-}"
 
 SEED_AMOUNT=${1:-1500000000}   # 150 USDC, comfortably above the 100 USDC MIN_SEED
 INITIAL_YES_BPS=${2:-5000}     # 50/50
@@ -84,23 +100,38 @@ spec_hash verify "$RESOLUTION_HASH" "${V2_FLAGS[@]}" signers 1 "$DISPUTE_WINDOW"
 QUESTION_HASH=$(sha256_hex "$QUESTION_TEXT")
 CLOSE_TIME=$(( $(date +%s) + CLOSE_IN_SECONDS ))
 
-echo "==> creating market (seed=$SEED_AMOUNT, close_time=$CLOSE_TIME)" >&2
-MARKET_ID=$(stellar contract invoke --id "$TREASURY" --source-account "$AGENT_KEY" --network "$NETWORK" -- \
-  agent_create_market \
-  --agent "$AGENT" \
-  --question_hash "$QUESTION_HASH" \
-  --resolution_hash "$RESOLUTION_HASH" \
-  --meta_uri "\"ipfs://$(echo -n "$QUESTION_TEXT" | tr ' ' '-')\"" \
-  --category Macro \
-  --close_time "$CLOSE_TIME" \
-  --seed_amount "$SEED_AMOUNT" \
-  --initial_yes_bps "$INITIAL_YES_BPS")
+if [ "$ATOMIC" = "true" ]; then
+  echo "==> creating AND revealing market atomically (seed=$SEED_AMOUNT, close_time=$CLOSE_TIME)" >&2
+  MARKET_ID=$(stellar contract invoke --id "$TREASURY" --source-account "$AGENT_KEY" --network "$NETWORK" -- \
+    agent_create_market_and_reveal \
+    --agent "$AGENT" \
+    --resolver "$RESOLVER" \
+    --question_hash "$QUESTION_HASH" \
+    --meta_uri "\"ipfs://$(echo -n "$QUESTION_TEXT" | tr ' ' '-')\"" \
+    --category Macro \
+    --close_time "$CLOSE_TIME" \
+    --seed_amount "$SEED_AMOUNT" \
+    --initial_yes_bps "$INITIAL_YES_BPS" \
+    --spec_v2 "$(jq -c .spec "$SPEC_FILE")")
+else
+  echo "==> creating market (seed=$SEED_AMOUNT, close_time=$CLOSE_TIME)" >&2
+  MARKET_ID=$(stellar contract invoke --id "$TREASURY" --source-account "$AGENT_KEY" --network "$NETWORK" -- \
+    agent_create_market \
+    --agent "$AGENT" \
+    --question_hash "$QUESTION_HASH" \
+    --resolution_hash "$RESOLUTION_HASH" \
+    --meta_uri "\"ipfs://$(echo -n "$QUESTION_TEXT" | tr ' ' '-')\"" \
+    --category Macro \
+    --close_time "$CLOSE_TIME" \
+    --seed_amount "$SEED_AMOUNT" \
+    --initial_yes_bps "$INITIAL_YES_BPS")
 
-echo "==> revealing the resolution spec to the resolver" >&2
-stellar contract invoke --id "$RESOLVER" --source-account "$AGENT_KEY" --network "$NETWORK" -- \
-  register_spec_v2 \
-  --market_id "$MARKET_ID" \
-  --spec "$(jq -c .spec "$SPEC_FILE")"
+  echo "==> revealing the resolution spec to the resolver" >&2
+  stellar contract invoke --id "$RESOLVER" --source-account "$AGENT_KEY" --network "$NETWORK" -- \
+    register_spec_v2 \
+    --market_id "$MARKET_ID" \
+    --spec "$(jq -c .spec "$SPEC_FILE")"
+fi
 
 echo "market_id=$MARKET_ID"
 echo "close_time=$CLOSE_TIME"

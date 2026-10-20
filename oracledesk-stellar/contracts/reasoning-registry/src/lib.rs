@@ -12,6 +12,9 @@ pub const COMMIT_DOMAIN_TAG: &[u8] = b"oracledesk.trace.commit.v1";
 const BUMP_THRESHOLD: u32 = 30 * 17_280;
 const BUMP_TO: u32 = 60 * 17_280;
 
+/// How long a pending admin proposal stays acceptable.
+pub const ADMIN_PROPOSAL_TTL_SECS: u64 = 7 * 86_400;
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Trace {
@@ -26,6 +29,7 @@ pub struct Trace {
 #[contracttype]
 pub enum DataKey {
     Admin,
+    PendingAdmin,
     NextId,
     Agent(Address),
     Trace(u64),
@@ -66,6 +70,14 @@ pub struct ChainLink {
     pub prev_trace_hash: BytesN<32>,
 }
 
+/// A proposed admin handover (#62). Absent when no transfer is pending.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingAdmin {
+    pub address: Address,
+    pub expires_at: u64,
+}
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(u32)]
@@ -83,7 +95,28 @@ pub enum Error {
     ChainedAgentMustChain = 9,
     /// Trace already backed an action (#50).
     TraceAlreadyConsumed = 10,
+    /// `accept_admin`/`cancel_admin_transfer` called with nothing proposed.
+    NoPendingAdmin = 11,
+    /// A proposed admin handover was not accepted within its `expires_at`.
+    PendingAdminExpired = 12,
 }
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminTransferProposed {
+    pub new_admin: Address,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminTransferred {
+    pub old: Address,
+    pub new: Address,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminTransferCancelled {}
 
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -149,6 +182,68 @@ impl ReasoningRegistry {
     pub fn __constructor(env: Env, admin: Address) {
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::NextId, &0u64);
+    }
+
+    // ----- admin ----------------------------------------------------------
+
+    /// Starts a two-step handover of the admin role. The new admin must call
+    /// `accept_admin` itself, so a typo cannot hand control to an address
+    /// nobody holds.
+    pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), Error> {
+        Self::require_admin(&env)?;
+        env.storage().instance().set(
+            &DataKey::PendingAdmin,
+            &PendingAdmin {
+                address: new_admin.clone(),
+                expires_at: env.ledger().timestamp() + ADMIN_PROPOSAL_TTL_SECS,
+            },
+        );
+        AdminTransferProposed { new_admin }.publish(&env);
+        Ok(())
+    }
+
+    pub fn accept_admin(env: Env) -> Result<(), Error> {
+        let pending = Self::load_pending(&env).ok_or(Error::NoPendingAdmin)?;
+        if env.ledger().timestamp() > pending.expires_at {
+            return Err(Error::PendingAdminExpired);
+        }
+        pending.address.require_auth();
+        let old: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        let s = env.storage().instance();
+        s.set(&DataKey::Admin, &pending.address);
+        s.remove(&DataKey::PendingAdmin);
+        AdminTransferred {
+            old,
+            new: pending.address,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    pub fn cancel_admin_transfer(env: Env) -> Result<(), Error> {
+        Self::require_admin(&env)?;
+        if Self::load_pending(&env).is_none() {
+            return Err(Error::NoPendingAdmin);
+        }
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        AdminTransferCancelled {}.publish(&env);
+        Ok(())
+    }
+
+    pub fn admin(env: Env) -> Result<Address, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)
+    }
+
+    /// The pending admin proposal, including its expiry, if one exists.
+    pub fn pending_admin(env: Env) -> Option<PendingAdmin> {
+        Self::load_pending(&env)
     }
 
     pub fn register_agent(env: Env, agent: Address) -> Result<(), Error> {
@@ -493,6 +588,10 @@ impl ReasoningRegistry {
             .ok_or(Error::NotInitialized)?;
         admin.require_auth();
         Ok(())
+    }
+
+    fn load_pending(env: &Env) -> Option<PendingAdmin> {
+        env.storage().instance().get(&DataKey::PendingAdmin)
     }
 }
 
@@ -970,5 +1069,103 @@ mod test {
             &BytesN::from_array(&env, &[8u8; 32]),
             &BytesN::from_array(&env, &expected)
         ));
+    }
+    #[test]
+    fn two_step_admin_transfer() {
+        let (env, client, admin, _) = setup();
+        let new_admin = Address::generate(&env);
+        assert_eq!(client.admin(), admin);
+        assert_eq!(client.pending_admin(), None);
+
+        client.propose_admin(&new_admin);
+        assert_eq!(
+            client.pending_admin().map(|p| p.address),
+            Some(new_admin.clone())
+        );
+        client.accept_admin();
+        assert_eq!(client.admin(), new_admin);
+        assert_eq!(client.pending_admin(), None);
+    }
+
+    #[test]
+    fn admin_transfer_can_be_cancelled() {
+        let (env, client, _, _) = setup();
+        let new_admin = Address::generate(&env);
+        client.propose_admin(&new_admin);
+        client.cancel_admin_transfer();
+        assert_eq!(client.pending_admin(), None);
+        assert_eq!(client.try_accept_admin(), Err(Ok(Error::NoPendingAdmin)));
+    }
+
+    #[test]
+    fn expired_admin_transfer_cannot_be_accepted() {
+        let (env, client, _, _) = setup();
+        let new_admin = Address::generate(&env);
+        client.propose_admin(&new_admin);
+        env.ledger()
+            .set_timestamp(env.ledger().timestamp() + ADMIN_PROPOSAL_TTL_SECS + 1);
+        assert_eq!(
+            client.try_accept_admin(),
+            Err(Ok(Error::PendingAdminExpired))
+        );
+        // The expired record stays visible so operators can inspect/clear it.
+        assert!(client
+            .pending_admin()
+            .map(|p| p.expires_at < env.ledger().timestamp())
+            .unwrap_or(false));
+    }
+
+    #[test]
+    fn wrong_caller_cannot_accept_admin() {
+        let (env, client, admin, _) = setup();
+        let new_admin = Address::generate(&env);
+        client.propose_admin(&new_admin);
+        let bystander = Address::generate(&env);
+        env.set_auths(&[]);
+        assert!(client
+            .mock_auths(&[MockAuth {
+                address: &bystander,
+                invoke: &MockAuthInvoke {
+                    contract: &client.address,
+                    fn_name: "accept_admin",
+                    args: ().into_val(&env),
+                    sub_invokes: &[],
+                },
+            }])
+            .try_accept_admin()
+            .is_err());
+        assert_eq!(client.admin(), admin);
+    }
+
+    #[test]
+    fn wrong_caller_cannot_propose_or_cancel_admin() {
+        let (env, client, _, _) = setup();
+        let not_admin = Address::generate(&env);
+        let new_admin = Address::generate(&env);
+        env.set_auths(&[]);
+        assert!(client
+            .mock_auths(&[MockAuth {
+                address: &not_admin,
+                invoke: &MockAuthInvoke {
+                    contract: &client.address,
+                    fn_name: "propose_admin",
+                    args: (new_admin.clone(),).into_val(&env),
+                    sub_invokes: &[],
+                },
+            }])
+            .try_propose_admin(&new_admin)
+            .is_err());
+        assert!(client
+            .mock_auths(&[MockAuth {
+                address: &not_admin,
+                invoke: &MockAuthInvoke {
+                    contract: &client.address,
+                    fn_name: "cancel_admin_transfer",
+                    args: ().into_val(&env),
+                    sub_invokes: &[],
+                },
+            }])
+            .try_cancel_admin_transfer()
+            .is_err());
     }
 }

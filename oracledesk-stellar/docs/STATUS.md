@@ -82,8 +82,16 @@ Key additions:
   and `guardian_void_market` with `GuardianReason`.
 - Spec-hash CLI: Added `committee` and `hybrid` spec hashing commands.
 - Reasoning registry wasm vendored into `contracts/resolver/reasoning_registry.wasm`
-  for cross-contract client generation in Soroban.
-- Documentation, architecture, ADRs, and security policy updated accordingly.
+## Contributor addendum: 2026-10-19
+
+Permissionless treasury settlement (#45), realized PnL tracking and auto-pause on drawdown (#46),
+market-creation risk controls (#47), and Blend lending integration with JIT liquidity (#48)
+are implemented on `feat/issues-45-46-47-48`.
+Key additions:
+- **Permissionless settlement (#45)**: `settle_market(caller, market_id)` allows anyone to settle resolved markets, recovering positions and LP remainders without hot agent keys. Graceful error handling for `market_core` errors (`NothingToRedeem`, `AlreadyClaimed`, `NotFinal`). Emits `MarketSettled`.
+- **Realized PnL & Drawdown Guard (#46)**: Full ledger tracking of cost and proceeds (`MarketPnl`), daily rolling window (`window_pnl`), and automatic `DrawdownPause` when losses exceed `max_drawdown`. Protects open positions by allowing reduce-only `agent_sell` in drawdown mode. Requires admin acknowledgement to resume.
+- **Creation Policy (#47)**: `CreationPolicy` bounding `max_seed` independently of `max_trade`, rolling window creation rate limits, horizon constraints (`min_close_horizon`, `max_close_horizon`), and allowed categories bitmask. Tighten-only admin configuration updates.
+- **Blend Lending & JIT Liquidity (#48)**: Idle capital deployment to Blend pool, atomic shortfall withdrawal in `agent_buy` and `agent_create_market` via `ensure_liquid`, fail-closed error handling with `YieldWithdrawFailed`, and comprehensive capital views (`available_capital`, `liquid_capital`, `capital_breakdown`). Documented in `docs/adr/0006-blend-integration.md`.
 
 ## Phase 0: recon and safety
 
@@ -294,15 +302,38 @@ markers in the files themselves:
   to a feed they control can still decide the outcome of a *resolvable*
   price market; the commitment does not bind oracle identity (ADR 0001,
   "Liveness fallback").
-- **Single admin key per contract**, no multisig. A compromised admin key
-  has a large blast radius per contract (see
-  `docs/wave-issues/12-architecture-deep-dive-and-threat-model.md`, which
-  proposes writing this up formally — not yet done). The treasury's
-  config, price policy and agent registry are timelocked (loosening waits
-  `config_delay`, tightening is immediate), which bounds what a compromised
-  admin can unlock for the *agents*; it does not cover `set_paused`,
-  `set_successor` + `migrate_market` (which moves positions out of the
-  vault), or any other contract's admin.
+- **Admin keys are rotatable and can be a multisig or the governance
+  timelock** (ADR 0007, ADR 0008). Every contract now has
+  `propose_admin`/`accept_admin`/`cancel_admin_transfer` with a seven-day
+  expiry; `new_admin` may be a classic multisig account, a smart-account
+  multisig (`CustomAccountInterface::__check_auth`), or the timelock.
+  `scripts/deploy-testnet.sh` can point the four core contracts at the
+  timelock from birth (`USE_TIMELOCK=1`), and `scripts/wire-timelock.sh`
+  migrates an existing deployment through the two-step handover.
+  - Residual: the deploy still defaults to the deployer EOA as admin
+    (`USE_TIMELOCK=0`), because the timelock makes the deploy script's own
+    admin setup calls wait out the delay and CI cannot fast-forward it.
+    Turning the flag on, or running `wire-timelock.sh`, is the operator's
+    step. See
+    `docs/adr/0006-authenticated-wiring-and-deterministic-deploy.md` for the
+    resolver/treasury wiring handshake.
+- **Resolver/treasury wiring is authenticated** (ADR 0006). `market-core`
+  proposes, the receiving contract proves it is configured for this
+  market-core, and change events are emitted; the old unauthenticated
+  `set_resolver`/`set_treasury` are gone. Deploys are deterministic
+  (`--salt`), and `scripts/migrate-market-core-wiring.sh` upgrades a
+  pre-handshake deployment.
+- **Multi-step flows are atomic through the router** (ADR 0009):
+  `create_and_reveal_{signers,price}`, `reveal_spec`, and
+  `buy_and_publish_trace`, so a market cannot exist without its rule and a
+  trade cannot drop its reasoning trace.
+- **Residual admin blast radius.** The treasury's config, price policy and
+  agent registry are timelocked (loosening waits `config_delay`, tightening
+  is immediate), which bounds what a compromised admin can unlock for the
+  *agents*; it does not cover `set_paused`, `set_successor` +
+  `migrate_market` (which moves positions out of the vault), or any other
+  contract's admin. Under the deferred timelock default (above) that
+  exposure is still live on testnet.
 - **Treasury vault NAV is conservative, not mark-to-market.** Directional
   exposure in open markets counts as zero, so deposits are slightly cheap
   and withdrawals slightly expensive while positions are open; positions

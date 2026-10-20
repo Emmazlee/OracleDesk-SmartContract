@@ -7,15 +7,15 @@
 # agents/ and x402/ install, since both depend on them by local file: path
 # and need real type declarations, not just a package.json, to typecheck.
 setup:
-	for pkg in market-core resolver treasury reasoning-registry; do \
+	for pkg in market-core resolver treasury reasoning-registry timelock router; do \
 		(cd packages/bindings/$$pkg && npm install && npm run build) || exit 1; \
 	done
 	cd agents && npm install
 	cd x402 && npm install
 
-# Builds all four Soroban contracts to wasm via the Stellar CLI, keeping
-# resolver/treasury's vendored copy of market-core.wasm in sync first (see
-# docs/adr/0002-cross-contract-calls.md — contractimport! reads that copy at
+# Builds all six Soroban contracts to wasm via the Stellar CLI, keeping the
+# vendored copies of cross-contract wasm in sync first (see
+# docs/adr/0002-cross-contract-calls.md — contractimport! reads those copies at
 # *their* compile time, so a stale copy silently keeps the old interface).
 build:
 	cargo build --workspace
@@ -23,6 +23,12 @@ build:
 	cp target/wasm32v1-none/release/market_core.wasm contracts/resolver/market_core.wasm
 	cp target/wasm32v1-none/release/market_core.wasm contracts/treasury/market_core.wasm
 	cp target/wasm32v1-none/release/reasoning_registry.wasm contracts/resolver/reasoning_registry.wasm
+	# router contractimports market-core, resolver and reasoning-registry; the
+	# treasury additionally imports the resolver (for the atomic reveal flow).
+	cp target/wasm32v1-none/release/market_core.wasm contracts/router/market_core.wasm
+	cp target/wasm32v1-none/release/resolver.wasm contracts/router/resolver.wasm
+	cp target/wasm32v1-none/release/reasoning_registry.wasm contracts/router/reasoning_registry.wasm
+	cp target/wasm32v1-none/release/resolver.wasm contracts/treasury/resolver.wasm
 	stellar contract build
 
 test: build

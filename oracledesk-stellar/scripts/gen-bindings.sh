@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Regenerates TypeScript client bindings for all four contracts from their
+# Regenerates TypeScript client bindings for all six contracts from their
 # built wasm into packages/bindings/<contract-name>/. Run after any contract
 # interface change (new/changed function signatures, types, or events) and
 # commit the result — this is what agents/stellar and any frontend import.
@@ -13,7 +13,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 WASM_DIR=target/wasm32v1-none/release
 OUT_DIR=packages/bindings
 
-for f in market_core resolver reasoning_registry treasury; do
+for f in market_core resolver reasoning_registry treasury timelock router; do
   if [ ! -f "$WASM_DIR/$f.wasm" ]; then
     echo "==> $WASM_DIR/$f.wasm missing — building all contracts first" >&2
     stellar contract build
@@ -26,6 +26,8 @@ declare -A NAMES=(
   [resolver]="resolver"
   [reasoning_registry]="reasoning-registry"
   [treasury]="treasury"
+  [timelock]="timelock"
+  [router]="router"
 )
 
 mkdir -p "$OUT_DIR"
