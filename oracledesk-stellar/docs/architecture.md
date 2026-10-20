@@ -17,6 +17,69 @@ natively unit-testable and mirrored line-for-line in
 [`model/fpmm_model.py`](../model/fpmm_model.py) and
 `agents/core/fpmm.ts` for property testing and off-chain quoting.
 
+**Split and merge (complete-set primitives).** Two pool-free entrypoints
+convert between collateral and complete sets, modelled on Gnosis's
+Conditional Tokens `splitPosition` / `mergePositions`:
+
+- `split(holder, market_id, amount)` pulls `amount` collateral from `holder`
+  and credits `amount` YES **and** `amount` NO to `holder`'s `Position`.
+  Requires `MarketStatus::Open` and `now < close_time` (reuses
+  `assert_tradable`) plus `assert_not_paused`; after close, splitting has no
+  purpose and would open timing games.
+- `merge(holder, market_id, amount)` debits `amount` YES and `amount` NO
+  (rejecting with `InsufficientShares` if either leg is short) and pays
+  `amount` collateral back to `holder`. Requires `MarketStatus::Open` but is
+  **allowed after `close_time` and while paused**: merging is a pure exit
+  that cannot harm the pool, and letting holders de-risk while the resolver
+  is slow is valuable. This asymmetry with `split` is deliberate.
+
+Neither touches `reserve_yes`, `reserve_no` or `fees_accrued`, and neither
+charges a fee. Both emit `SetsSplit` / `SetsMerged` (`market_id`, `holder`
+as topics, `amount` as data) so indexers can track positions. `split`
+performs its state writes before the token transfer, matching `buy`.
+`math::merge_max(yes, no) = min(yes, no)` (mirrored in the Python model and
+the TS agent core) backs the `quote_merge_max(market_id, holder)` view for
+frontends offering "merge all".
+
+The TS mirror lives in `agents/core/fpmm.ts` as `mergeMax(yes, no)` and must
+stay syntactically valid and in lockstep with `math::merge_max`; the agents
+test suite exercises known values against the Rust and Python implementations.
+
+**Invariant proof for split/merge.** Let `S = sets_minted`,
+`R_y, R_n` be the reserves and `Σpos.yes, Σpos.no` the summed holder legs.
+
+- *Split* adds `amount` to `S`, to `Σpos.yes` and to `Σpos.no`, so
+  `R_y + Σpos.yes == S` (and the NO twin) is preserved. The collateral
+  balance grows by exactly `amount`, so `balance == S + fees_accrued +
+  lp_fees` holds.
+- *Merge* subtracts `amount` from `S` and from both sums, and pays out
+  `amount` collateral; the same two equalities are preserved.
+- *Settlement.* Resolved(Yes) pays `R_y + Σpos.yes = S`. Void pays
+  `Σ floor((y_i + n_i)/2) + floor((R_y + R_n)/2) <= (Σ(y_i + n_i) + R_y +
+  R_n)/2 = S`. Split can increase the number of holders each losing up to
+  0.5 unit to flooring, but the total is bounded by `S` — the
+  `void_total_payout_never_exceeds_sets_with_split` test asserts this.
+
+**MAX_SETS griefing (split).** `split` is bounded by `math::MAX_SETS`
+(`MarketTooLarge` above it), the same cap `buy` enforces. An attacker can
+therefore split up to `MAX_SETS` and block further `buy` calls at the cost
+of locking that much capital, then merge out risk-free. Decision: keep the
+shared cap rather than add a separate per-market split cap or exclude split
+sets from the `buy` limit. A separate cap would let `sets_minted` exceed
+`MAX_SETS` (breaking the settlement bound above), and excluding split sets
+from the `buy` limit would let `sets_minted` grow unbounded. The griefing
+cost is locking the full `MAX_SETS` of collateral, which is expensive and
+recoverable only by the attacker's own merge; the alternative designs are
+worse. This is documented as a known limitation.
+
+**Pause semantics for merge.** Because `merge` works while paused, a paused
+contract can still pay out collateral. This is intentional (a pure exit
+cannot harm the pool) and is recorded in `SECURITY.md`.
+
+**`sell` accounting.** `sell` now uses `checked_sub` for `sets_minted`
+(previously an unchecked `-=`), so a bug can never drive `S` negative and
+break the settlement bound.
+
 **Solvency invariant** (holds after every state transition — see the test
 suite for the ones exercised): the contract's own SEP-41 token balance for a
 market equals `sets_minted + fees_accrued + lp_fees` (`fees_accrued` is the
@@ -24,54 +87,9 @@ protocol's pending share of trading fees, `lp_fees` the creator's — see the
 fee split below), and `reserve_yes + Σ(user yes positions) == sets_minted`
 (symmetrically for `no`).
 
-**Split and merge.** Two pool-free primitives mirror Gnosis's Conditional
-Tokens `splitPosition` / `mergePositions`:
-
-- `split(holder, market_id, amount)` pulls `amount` collateral from `holder`
-  and credits `amount` YES plus `amount` NO to `holder`'s position. It adds
-  `amount` to `sets_minted`. Requires `MarketStatus::Open`, `now <
-  close_time` (via `assert_tradable`) and not paused; after close, splitting
-  has no purpose and would only open timing games.
-- `merge(holder, market_id, amount)` burns `amount` YES and `amount` NO and
-  pays `amount` collateral back to `holder`. It subtracts `amount` from
-  `sets_minted`. Requires `MarketStatus::Open` (with `InsufficientShares`
-  when either leg is short), but is **allowed after `close_time` and while
-  paused**: merging is a pure exit that cannot harm the pool, and letting
-  holders de-risk while the resolver is slow is valuable. This asymmetry is
-  deliberate.
-
-Neither entrypoint touches `reserve_yes`, `reserve_no` or `fees_accrued`,
-and neither charges a fee. Both emit `SetsSplit` / `SetsMerged` so indexers
-can track positions.
-
-*Invariant proof.* Split adds `amount` to `sets_minted`, to `Σpos.yes` and
-to `Σpos.no`, so `reserve_yes + Σpos.yes == sets_minted` is preserved (and
-symmetrically for NO). The contract's collateral balance grows by exactly
-`amount`, so `balance == sets_minted + fees_accrued + lp_fees` holds. Merge
-is the exact inverse. Under resolution, Resolved(Yes) pays `reserve_yes +
-Σpos.yes = sets_minted`; under Void, the total paid is `Σ floor((y_i +
-n_i)/2) + floor((r_y + r_n)/2) <= (Σ(y_i + n_i) + r_y + r_n)/2 =
-sets_minted`, so payouts never exceed collateral. Splitting increases the
-number of holders that can each lose up to 0.5 unit to Void flooring; the
-loss is bounded by the number of holders and never exceeds `sets_minted`.
-
-*MAX_SETS griefing.* `split` is bounded by `math::MAX_SETS` (1e15) exactly
-like `buy`. An attacker can split up to `MAX_SETS` and thereby block further
-`buy` calls (`MarketTooLarge`) at the cost of locking that capital, then
-merge out risk-free. This is accepted for now: the capital cost is
-proportional to the griefing, the attacker cannot extract value, and a
-per-market split-set cap or excluding split sets from the `buy` limit would
-add accounting complexity for a bounded, self-funded attack. Revisit if
-`MAX_SETS` is ever raised or split becomes cheap.
-
-`sell` uses `checked_sub` on `sets_minted` so the invariant cannot silently
-underflow. `math::merge_max(yes, no) = min(yes, no)` (mirrored in
-`model/fpmm_model.py` and `agents/core/fpmm.ts`) backs the
-`quote_merge_max(market_id, holder) -> i128` view for "merge all" frontends.
-
 **Fee split and recipient snapshot.** `create_market` snapshots a
 `FeeTerms { recipient, protocol_share_bps }` side entry per market, so
-`set_treasury` / `set_protocol_fee_share_bps` only affect markets created
+`propose_treasury` / `set_protocol_fee_share_bps` only affect markets created
 after them. Each trade's fee is split once at accrual time
 (`math::split_fee`, protocol shares round up so `protocol + lp == fee`
 exactly): the protocol portion accumulates in `Market.fees_accrued` and is
@@ -135,13 +153,14 @@ zero entries" rule.
 time — see [ADR 0001](adr/0001-resolution-commitment.md) for why.
 
 Lifecycle: `create_market` → `buy`/`sell` (while open; `buy_v2`/`sell_v2`
-with bounds), plus `split` (while open and before `close_time`) and `merge`
-(while open, including after `close_time` and while paused) → `resolve` or
-`void_market` (resolver-only) → `redeem` per
+with bounds) → `resolve` or `void_market` (resolver-only) → `redeem` per
 holder, `claim_pool_remainder` for the creator/LP, `sweep_fees`
 (permissionless) to the snapshotted fee recipient. Positions and LP
 ownership can change hands at any point via `transfer_position` /
-`transfer_lp`.
+`transfer_lp`. While open, `split`/`merge` convert between collateral and
+complete sets without touching the pool (`split` before `close_time`,
+`merge` any time before resolution, including while paused). After
+finality, `redeem` handles both legs; `merge` is not used post-resolution.
 
 ### resolver
 
@@ -307,6 +326,11 @@ on the treasury's money. The `*_v2` twins forward the same caps plus
 market-core's deadline / limit-price bounds, so a revert from either layer
 leaves the caps unchanged (the whole invocation is atomic).
 
+Treasury `agent_split` / `agent_merge` forwarders are **not** implemented
+yet (a non-goal of the split/merge change); agents that need the primitives
+call `market-core` directly today. They can be added later as thin wrappers
+that reuse the existing caps.
+
 **Agents.** The treasury keeps a registry of up to `MAX_AGENTS = 16` agents,
 each with an `AgentPolicy { roles, max_trade, max_daily, active }`. Roles are
 a bitmask: `ROLE_CREATE` (`agent_create_market`), `ROLE_TRADE` (`agent_buy`,
@@ -410,7 +434,8 @@ are: the old core is recorded as legacy, `legacy_redeem` /
 `legacy_claim_pool_remainder` recover them, and exposure for any later core
 is kept under keys namespaced by core address (the original core keeps the
 old `Market(id)` / `Net(id)` keys) so restarted market ids cannot collide.
-The new core still needs its own `set_treasury` for fee sweeps. This bounds
+The new core still needs its own `propose_treasury` handshake for fee sweeps.
+This bounds
 what a compromised admin can unlock *for the agents*; it is not a custody
 control (see "Vault" and SECURITY.md).
 
@@ -469,6 +494,44 @@ implemented: it would record provenance only, and the events plus the
 successor's own exposure records are enough for an off-chain dashboard
 ([wave-issue 08](wave-issues/08-treasury-exposure-dashboard.md)).
 
+**Permissionless settlement & exposure release (#45).** Settle market capital
+without depending on hot agent keys: `settle_market(caller, market_id)` is
+permissionless and idempotent. It redeems the treasury's outcome-share position if
+any, claims the LP remainder if the treasury created the market, marks market exposure
+closed (`open = false`), and records realized proceeds under `Realized(market_id)`.
+Calls to `market-core` use generated `try_` client methods so expected core errors
+(`NothingToRedeem`, `AlreadyClaimed`, `NotFinal`) map cleanly to 0 or distinct treasury
+errors without unhandled transaction aborts. Settlement operates even when the treasury
+is paused (stopping trading, not fund recovery).
+
+**Realized PnL & auto-pause on drawdown (#46).** Cumulative losses across markets
+are bounded by an automated drawdown guard. The treasury tracks collateral cost
+(buys and market seeds) and proceeds (sells, redemptions, LP remainders) per market
+(`MarketPnl`). PnL is realized once a market is final and all positions/LP claims are settled
+(or via permissionless `realize(market_id)` for pre-close exits). A rolling window of daily
+buckets advances lazily, summing net realized PnL across `window_days`. If `window_pnl < -max_drawdown`,
+the contract trips into drawdown pause (`DrawdownTripped` instance flag, emitting `DrawdownPause`).
+In this mode, buys and creations are blocked, but `agent_sell` remains open (reduce-only) to avoid
+trapping positions. Resuming requires admin `acknowledge_drawdown()` before unpausing. Third parties
+triggering settlements cannot manipulate loss magnitude, only realization timing. Protocol fees and
+external donations are strictly excluded from PnL accounting.
+
+**Market-creation risk controls (#47).** Market seeds are decoupled from trade caps
+via a dedicated `CreationPolicy` (max seed, rolling creation count limit, close horizon
+bounds, allowed category bitmask). Stored in instance storage with bounded bucket arrays
+(`CREATION_BUCKETS = 24`), creation limits are enforced before any cross-contract calls.
+Admin policy updates are tighten-only (`set_creation_policy`), preventing a compromised key
+from instantly loosening rules without a redeploy.
+
+**Blend lending integration & JIT liquidity (#48).** Idle USDC can be supplied to a
+configured Blend pool (`set_yield_venue`, `allocate_to_yield`, `recall_from_yield`) up to
+`max_allocation` while preserving at least `max_daily` in liquid collateral. Spending entrypoints
+(`agent_buy`, `agent_create_market`) use Just-In-Time liquidity (`ensure_liquid`): shortfalls in
+liquid reserves trigger an atomic withdrawal from Blend within the same transaction. If pool
+utilization prevents withdrawal, the trade reverts cleanly (`YieldWithdrawFailed`, fail-closed).
+NAV views (`available_capital`) account for liquid plus supplied capital, alongside `capital_breakdown`.
+See [ADR 0006](adr/0006-blend-integration.md).
+
 The nested-authorization pitfall this design implies, and how it's handled,
 is documented at length in `contracts/treasury/src/lib.rs` (see
 `authorize_token_pull`) and exercised by
@@ -490,6 +553,42 @@ unbounded `Vec`, so the index never has an unbounded-growth storage cost.
 events. An indexer (Soroban events → Postgres, replayable) is required for
 any UI that wants to list traces/trades older than that window — this is
 one of the seeded `docs/wave-issues/`.
+
+### router
+
+A stateless address book (`RouterConfig { market_core, resolver,
+reasoning_registry }`) plus atomic multi-step entrypoints, so a client cannot
+half-apply a flow or point it at a hostile resolver (ADR 0009):
+`create_and_reveal_signers` / `create_and_reveal_price` (create the market and
+reveal its rule in one transaction; the commitment is computed locally from
+the spec), `reveal_spec` (the deferred commit-now/reveal-later path), and
+`buy_and_publish_trace` (buy through market-core and publish the reasoning
+trace together, so a trade cannot drop its trace). It holds no funds and has
+no admin.
+
+### Governance: wiring, admin transfer, timelock
+
+- **Authenticated wiring (ADR 0006).** `market-core` no longer lets the admin
+  set the resolver/treasury directly. It `propose_resolver` /
+  `propose_treasury`; the target must then prove, by calling back
+  `market_core()`, that it is configured for this market-core before it takes
+  the role. Every change emits `ResolverProposed`/`ResolverChanged` (and the
+  treasury equivalents). Deploys are deterministic (`--salt`), so the real
+  addresses are known before `market-core`'s constructor runs and there is no
+  placeholder window.
+- **Two-step admin transfer (ADR 0007).** All four core contracts (and the
+  timelock) expose `propose_admin`/`accept_admin`/`cancel_admin_transfer` with
+  a seven-day expiry. The new admin must accept, so a proposal to an address
+  the operator does not control never lands; `new_admin` may be a classic
+  multisig account, a smart-account multisig, or the timelock.
+- **Timelock (ADR 0008).** `contracts/timelock` separates the proposer,
+  canceller, executor and emergency roles and imposes a delay
+  (`MIN_DELAY = 1 day`) between `schedule` and `execute`, with a seven-day
+  execution grace and a `cancel` veto. `emergency` bypasses the delay for
+  `set_paused(true)` / `cancel_proposal` only. Pointing the core contracts'
+  admin at the timelock (deploy with `USE_TIMELOCK=1`, or migrate with
+  `scripts/wire-timelock.sh`) removes any single key's ability to change a
+  live market instantly.
 
 ## Off-chain pieces
 
@@ -516,3 +615,7 @@ one of the seeded `docs/wave-issues/`.
   deployments (this repo's or a fork's) from trading against the same
   market-core markets; the treasury's caps bound one agent deployment's own
   risk, not systemic market behavior.
+- MAX_SETS griefing via `split`: an attacker can split up to `MAX_SETS` and
+  block further `buy` calls (`MarketTooLarge`) at the cost of locking that
+  much collateral, then merge out risk-free. See the split/merge section
+  above for why the shared cap is kept.

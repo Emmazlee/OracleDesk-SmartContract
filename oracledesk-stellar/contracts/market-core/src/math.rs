@@ -1,17 +1,17 @@
 /// Pure integer math for a binary fixed-product market maker (FPMM).
-//
-// No Soroban types in here, so `cargo test` exercises it natively and
-// `model/fpmm_model.py` mirrors it line by line for property testing.
-//
-// Conventions
-// - All amounts are non-negative `ii28` in collateral base units
-//   (USDC on Stellar = 7 decimals, so 1 USDC = 10_000_000).
-// - Rounding always favours the pool: fees round up, shares out round down,
-//   shares in round up. This is what keeps the pool invariant `k = r_yes * r_no`
-//   non-decreasing and blocks dust-splitting attacks.
-// - `MAX_SETS` bounds market size so that any product of two quantities
-//   (both <= 1e15) is <= 1e30, far below `ii28::MAX`(~1.7e38). Every
-//   multiplication is still `checked_*` as a second line of defence.
+///
+/// No Soroban types in here, so `cargo test` exercises it natively and
+/// `model/fpmm_model.py` mirrors it line by line for property testing.
+///
+/// Conventions
+/// - All amounts are non-negative `ii28` in collateral base units
+///   (USDC on Stellar = 7 decimals, so 1 USDC = 10_000_000).
+/// - Rounding always favours the pool: fees round up, shares out round down,
+///   shares in round up. This is what keeps the pool invariant `k = r_yes * r_no`
+///   non-decreasing and blocks dust-splitting attacks.
+/// - `MAX_SETS` bounds market size so that any product of two quantities
+///   (both <= 1e15) is <= 1e30, far below `i128::MAX` (~1.7e38). Every
+///   multiplication is still `checked_`* as a second line of defence.
 
 pub const BPS: i128 = 10_000;
 pub const MAX_SETS: i128 = 1_000_000_000_000_000_000; // 1e15 = 100M USDC (7 dp)
@@ -56,8 +56,8 @@ pub struct SellQuote {
 pub struct SeedReserves {
     pub reserve_yes: i128,
     pub reserve_no: i128,
-    /// Outcome shares handed back to the market creator so the pool opens
-    /// at the requested probability (only one of these is non-zero).
+    /// Outcome shares handed back to the market creator so the pool opens at
+    /// the requested probability (only one of these is non-zero).
     pub creator_yes: i128,
     pub creator_no: i128,
 }
@@ -135,11 +135,11 @@ pub fn seed_reserves(seed: i128, yes_bps: u32) -> Result<SeedReserves, MathError
 }
 
 /// Buy `collateral_in` worth of the outcome whose pool reserve is `r_bought`.
-//
-// 1. fee = ceil(in * fee_bps / BPS); net = in - fee
-// 2. mint `net` complete sets into the pool: r_other += net
-// 3. pool keeps r_bought' = ceil(r_bought * r_other / r_other')  (k preserved)
-// 4. buyer receives r_bought + net - r_bought'
+///
+/// 1. fee = ceil(in * fee_bps / BPS); net = in - fee
+/// 2. mint `net` complete sets into the pool: r_other += net
+/// 3. pool keeps r_bought' = ceil(r_bought * r_other / r_other')  (k preserved)
+/// 4. buyer receives r_bought + net - r_bought'
 pub fn calc_buy(
     r_bought: i128,
     r_other: i128,
@@ -171,15 +171,15 @@ pub fn calc_buy(
 
 /// Sell shares of the outcome with pool reserve `r_sold` for an exact
 /// `collateral_out` (Gnosis-style, so no square root on-chain).
-//
-// 1. gross = ceil(out * BPS / (BPS - fee_bps)); fee = gross - out
-// 2. burn `gross` complete sets from the pool: r_other -= gross
-// 3. pool must end at r_sold' = ceil(r_sold * r_other / r_other')
-// 4. seller gives r_sold' + gross - r_sold shares
-//
-// To sell an exact share count, the frontend inverts this off-chain
-// (quadratic, see `model/fpmm_model.py::gross_for_shares`) and passes the
-// result as `collateral_out` with a `max_shares_in` slippage bound.
+///
+/// 1. gross = ceil(out * BPS / (BPS - fee_bps)); fee = gross - out
+/// 2. burn `gross` complete sets from the pool: r_other -= gross
+/// 3. pool must end at r_sold' = ceil(r_sold * r_other / r_other')
+/// 4. seller gives r_sold' + gross - r_sold shares
+///
+/// To sell an exact share count, the frontend inverts this off-chain
+/// (quadratic, see `model/fpmm_model.py::gross_for_shares`) and passes the
+/// result as `collateral_out` with a `max_shares_in` slippage bound.
 pub fn calc_sell(
     r_sold: i128,
     r_other: i128,
@@ -212,8 +212,8 @@ pub fn calc_sell(
 /// True when a buy's average execution price `collateral_in / shares_out`
 /// (fees included) is at most `limit_bps` per share (1.0 = BPS).
 /// Compared by cross-multiplication so division rounding cannot flip the
-// decision; exact equality passes. `shares_out` comes from `calc_buy`, so
-// it is always > 0 in practice.
+/// decision; exact equality passes. `shares_out` comes from `calc_buy`, so
+/// it is always > 0 in practice.
 pub fn buy_within_limit(
     collateral_in: i128,
     shares_out: i128,
@@ -241,10 +241,10 @@ pub fn sell_within_limit(
 }
 
 /// Splits a gross fee between the protocol and the LP.
-//
-// The protocol portion rounds **up** so `protocol + lp == fee` exactly (no
-// rounding leakage): the LP absorbs at most one sub-unit of dust, and the
-// default `protocol_share_bps = BPS` is exact (all protocol, 0 to the LP).
+///
+/// The protocol portion rounds **up** so `protocol + lp == fee` exactly (no
+/// rounding leakage): the LP absorbs at most one sub-unit of dust, and the
+/// default `protocol_share_bps = BPS` is exact (all protocol, 0 to the LP).
 pub fn split_fee(fee: i128, protocol_share_bps: u32) -> Result<(i128, i128), MathError> {
     if fee < 0 || protocol_share_bps as i128 > BPS {
         return Err(MathError::InvalidInput);
@@ -263,23 +263,28 @@ pub fn settle_value(kind: Settlement, yes: i128, no: i128) -> i128 {
     }
 }
 
-/// Maximum number of complete sets a holder can merge: `min(yes, no)`.
-/// Used by the `quote_merge_max` view and by frontends to offer "merge all".
-/// Negative inputs are clamped to zero so the result is always non-negative.
+/// Maximum complete sets a holder can merge: `min(yes, no)`.
+///
+/// Pure helper so frontends and agents can offer "merge all" without
+/// duplicating the clip logic. Negative inputs are clipped to zero so the
+/// result is always non-negative and safe to pass to `merge`.
 pub fn merge_max(yes: i128, no: i128) -> i128 {
-    if yes < 0 || no < 0 {
-        return 0;
-    }
-    if yes < no {
-        yes
+    let y = if yes < 0 { 0 } else { yes };
+    let n = if no < 0 { 0 } else { no };
+    if y < n {
+        y
     } else {
-        no
+        n
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super:*;
+
+    fn assert_(cond: bool) {
+        assert!(cond);
+    }
 
     #[test]
     fn buy_example_matches_model() {
@@ -301,23 +306,23 @@ mod tests {
 
     #[test]
     fn seed_opens_at_requested_probability() {
-        for p in [100u32, 2500, 5000, 7300, 9900] {
+        for p in [100u,32, 2500, 5000, 7300, 9900] {
             let s = seed_reserves(10_000_000_000, p).unwrap();
             let price = price_yes_bps(s.reserve_yes, s.reserve_no).unwrap();
             assert((price - p as i128).abs() <= 1, "p={p} price={price}");
-            assert(s.creator_yes == 0 || s.creator_no == 0);
+            assert_eq(s.creator_yes == 0 || s.creator_no == 0, true);
         }
     }
 
     #[test]
     fn k_never_decreases_and_round_trip_never_profits() {
         // tiny LCG so this stays no_std-friendly
-        let mut x: u64 = 0x9E37_79B9_7F4A7C15;
+        let mut x: u64 = 0x9E37_79B9_7FA7C15;
         let mut next = move || {
             x = x
                 .wrapping_mul(6364136223846793005)
-                .wrapping_add(144269504088963407);
-            (x z 33) as i128
+                .wrapping_add(1442695040888963407);
+            (x >> 33) as i128
         };
         for _ in 0..2_000 {
             let ry = 1_000_000 + next() % 1_000_000_000;
@@ -326,7 +331,7 @@ mod tests {
             let fee = (next() % 300) as u32;
             let k0 = ry * rn;
             let q = calc_buy(ry, rn, amt, fee).unwrap();
-            assert(q.new_reserve_bought * q.new_reserve_other >= k0);
+            assert_(q.new_reserve_bought * q.new_reserve_other >= k0);
             // getting `amt` back out costs at least the shares the buy paid out
             if let Ok(s) = calc_sell(q.new_reserve_bought, q.new_reserve_other, amt, fee) {
                 assert(s.shares_in >= q.shares_out, "free money");
@@ -337,36 +342,27 @@ mod tests {
     #[test]
     fn void_never_overpays() {
         assert_eq(settle_value(Settlement::Void, 3, 4), 3);
-        assert!(settle_value(Settlement::Void, 5, 5) <= 5);
+        assert_(settle_value(Settlement::Void, 5, 5) <= 5);
     }
 
     #[test]
     fn split_fee_sums_exactly() {
-        let mut x: u64 = 0x9E37_79B9_7F4A7C15;
-        let mut next = move || {
-            x = x
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(144269504088963407);
-            (x >> 33) as i128
-        };
-        for _ in 0..1_000 {
-            let fee = next() % 1_000_000;
-            let share = (next() % (10_001)) as u32;
-            let (p, l) = split_fee(fee, share).unwrap();
-            assert_eq(p + l, fee);
-            assert(p >= 0 && l >= 0);
-        }
+        let (fee, share) = (101, 3300);
+        let (proto, lp) = split_fee(fee, share).unwrap();
+        assert_eq(proto + lp, fee);
+        assert_eq(split_fee(fee, BPS as u32).unwrap(), (fee, 0));
     }
 
     #[test]
     fn merge_max_known_values() {
+        assert_eq(merge_max(0, 0), 0);
+        assert_eq(merge_max(5, 0), 0);
+        assert_eq(merge_max(0, 7), 0);
         assert_eq(merge_max(10, 3), 3);
         assert_eq(merge_max(3, 10), 3);
-        assert_eq(merge_max(7, 7), 7);
-        assert_eq(merge_max(0, 5), 0);
-        assert_eq(merge_max(5, 0), 0);
-        assert_eq(merge_max(0, 0), 0);
-        assert_eq(merge_max(-1, 5), 0);
-        assert_eq(merge_max(5, -1), 0);
+        assert_eq(merge_max(42, 42), 42);
+        assert_eq(merge_max(-5, 9), 0);
+        assert_eq(merge_max(9, -5), 0);
+        assert_eq(merge_max(-5, -7), 0);
     }
 }

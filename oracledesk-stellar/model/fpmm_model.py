@@ -132,15 +132,14 @@ def settle_value(kind: str, yes: int, no: int) -> int:
 
 
 def merge_max(yes: int, no: int) -> int:
-    """Largest amount of complete sets a holder can merge: `min(yes, no)`.
-
-    Mirrors math.rs::merge_max and the TypeScript port in agents/core. Used
-    by frontends to offer "merge all" and by the on-chain
-    `quote_merge_max` view. Both legs must be non-negative.
-    """
+    """Largest amount of complete sets a holder can merge: the smaller of
+    their YES and NO balances. Mirrors math.rs::merge_max; split/merge never
+    touch the pool, so this is a pure min over the holder's position."""
     if yes < 0 or no < 0:
         raise MathError("invalid input")
-    return yes if yes < no else no
+    return min(yes, no)
+
+
 
 
 def gross_for_shares(r_sold: int, r_other: int, shares_in: int, fee_bps: int) -> int:
@@ -300,23 +299,23 @@ def _check_gross_for_shares_inverts_calc_sell(trials: int = 2_000, seed: int = 1
 def _check_void_never_overpays():
     assert settle_value("void", 3, 4) == 3
     assert settle_value("void", 5, 5) <= 5
+
+
 def _check_merge_max_known_values():
-    """Pins merge_max against the same worked examples as math.rs and the
-    TypeScript mirror, so a porting mistake between the three is caught."""
+    """Pins the same worked examples as math.rs's merge_max tests."""
     assert merge_max(0, 0) == 0
     assert merge_max(5, 0) == 0
     assert merge_max(0, 7) == 0
-    assert merge_max(3, 4) == 3
-    assert merge_max(4, 3) == 3
-    assert merge_max(9, 9) == 9
-    assert merge_max(MAX_SETS, 1) == 1
-    assert merge_max(1, MAX_SETS) == 1
+    assert merge_max(3, 3) == 3
+    assert merge_max(10, 4) == 4
+    assert merge_max(4, 10) == 4
+    assert merge_max(MAX_SETS, MAX_SETS) == MAX_SETS
     try:
         merge_max(-1, 5)
     except MathError:
         pass
     else:
-        raise AssertionError("merge_max must reject negative legs")
+        raise AssertionError("merge_max accepted a negative balance")
 
 
 
