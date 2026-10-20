@@ -120,6 +120,21 @@ Independent resolution modes, all ultimately calling
   Anyone may first pin the grid read with `snapshot_price` (legacy and hybrid
   specs only; scaled markets reply `WrongMode` — see "Oracle history retention"
   below).
+- **PriceTwap**: the time-weighted-average price threshold (issue #27,
+  `TwapConfig` + `register_twap_spec`/`resolve_twap`). Samples
+  `price(asset, ts)` at every `resolution()`-aligned timestamp in
+  `(close_time - window, close_time]` — at most `MAX_TWAP_SAMPLES` (32)
+  reads — skips missing records, and rejects fewer than `min_samples`
+  samples or any gap above `max_gap` (start→first, consecutive, and
+  last→close) with `StalePrice`. The average is an integer-only, checked
+  `i128` sum weighted by time-to-next-sample (the last sample's weight runs
+  through `close_time` inclusive), floored before the threshold comparison,
+  and emitted as `TwapResolution` alongside the unchanged
+  `PriceResolution`/`V2` pair. It commits through its own domain-tagged
+  preimage (ADR 0001, "TWAP resolution variant") and is `WrongMode` for
+  `snapshot_price`/`preview_price`, which pin single prints. A market uses
+  at most one price shape: `assert_unconfigured` covers
+  `Price`/`PriceScaled`/`PriceTwap` together.
 - **Attested**: m-of-n signer votes on a resolver-local
   `AttestedOutcome { Yes, No, Invalid }`; once `threshold` signers agree, a
   dispute window opens; anyone can finalize after it elapses, or a guardian
