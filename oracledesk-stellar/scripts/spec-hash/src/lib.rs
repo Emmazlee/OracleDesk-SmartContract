@@ -3,14 +3,14 @@
 //! `docs/adr/0004-spec-versioning.md`). Off-chain dev tool only; never deployed.
 //!
 //! All hashing delegates to the resolver crate's own `legacy_spec_hash` /
-//! `spec_v2_hash` / `scaled_spec_hash`, so the tool cannot drift from the
-//! contract.
+//! `spec_v2_hash` / `scaled_spec_hash` / `twap_spec_hash`, so the tool cannot
+//! drift from the contract.
 
 use resolver::{
-    legacy_spec_hash, scaled_spec_hash, spec_v2_hash, CommitteeRef, DisputableSignerConfig,
-    Escalation, HybridConfig, OracleAsset, PriceConfig, PriceDirection, ResolutionSpec,
-    ResolutionSpecV2, ScaledPriceConfig, SignerConfig, WeightedKey, WeightedKeyConfig,
-    MAX_THRESHOLD_DECIMALS,
+    legacy_spec_hash, scaled_spec_hash, spec_v2_hash, twap_spec_hash, CommitteeRef,
+    DisputableSignerConfig, Escalation, HybridConfig, OracleAsset, PriceConfig, PriceDirection,
+    ResolutionSpec, ResolutionSpecV2, ScaledPriceConfig, SignerConfig, TwapConfig, WeightedKey,
+    WeightedKeyConfig, MAX_THRESHOLD_DECIMALS,
 };
 use soroban_sdk::{Address, Bytes, BytesN, Env, Symbol, Vec as SorobanVec};
 
@@ -26,13 +26,17 @@ usage:
     same asset/direction vocabulary as `price`
   spec-hash [V2 FLAGS] price-scaled <reflector_C_address> <asset> <direction> <max_staleness_secs> --decimal <d.d>
     --decimal converts an exact decimal string (no floats): `0.20` = threshold 20, decimals 2
+  spec-hash price-twap <reflector_C_address> <asset> <threshold> <direction> <window_secs> <min_samples> <max_gap_secs>
+    time-weighted-average variant (issue #27): averages the feed's records over
+    (close_time - window_secs, close_time]; <threshold> is feed-native units like `price`;
+    own domain-tagged preimage, so it accepts neither the --v2 envelope nor --decimal
   spec-hash [V2 FLAGS] weighted-keys <weight_threshold> <dispute_window_secs> <pubkey_hex64>:<weight>...
   spec-hash [V2 FLAGS] signers-disputable <threshold> <dispute_window_secs> <bond_stroops>
       <escalation_timeout_secs> <escalation> <signer_G_address>...
     <escalation> is `guardian` or `committee:<k>:<G_address>,<G_address>...`
   spec-hash [V2 FLAGS] committee <committee_id> <min_epoch> <max_rotation_delta> <dispute_window_secs>
   spec-hash [V2 FLAGS] hybrid <fallback_after_secs> <reflector> <asset> <threshold> <direction> <max_staleness> -- <threshold> <dispute_window_secs> <signer>...
-  spec-hash [V2 FLAGS] verify <expected_hash_hex> <signers|price|price-scaled|weighted-keys|signers-disputable|committee|hybrid> <args>... [--decimal <d.d>]
+  spec-hash [V2 FLAGS] verify <expected_hash_hex> <signers|price|price-scaled|price-twap|weighted-keys|signers-disputable|committee|hybrid> <args>... [--decimal <d.d>]
   spec-hash gen-salt
 
 V2 FLAGS (all four are required together; without them the legacy hash is printed):
@@ -253,6 +257,36 @@ pub fn parse_price_scaled(
     })
 }
 
+/// Builds the [`TwapConfig`] a market commits to through
+/// `resolver::twap_spec_hash` (issue #27). Shares the `<asset>`/`<direction>`
+/// vocabulary of `price`/`price-scaled`; the three TWAP-specific positional
+/// args mirror `register_twap_spec`'s field order: `<window_secs>`
+/// (average over (close_time - window, close_time]), `<min_samples>`
+/// (present grid records required) and `<max_gap_secs>` (largest tolerated
+/// gap between window start, samples, and close).
+pub fn parse_price_twap(env: &Env, args: &[String]) -> Result<TwapConfig, String> {
+    let [reflector, asset, threshold, direction, window, min_samples, max_gap] = args else {
+        return Err("price-twap needs <reflector> <asset> <threshold> <direction> <window> <min_samples> <max_gap>".into());
+    };
+    Ok(TwapConfig {
+        reflector: parse_address(env, reflector)?,
+        asset: parse_asset(env, asset)?,
+        threshold: threshold
+            .parse()
+            .map_err(|_| "threshold must be an i128".to_string())?,
+        direction: parse_direction(direction)?,
+        window: window
+            .parse()
+            .map_err(|_| "window must be a u64".to_string())?,
+        min_samples: min_samples
+            .parse()
+            .map_err(|_| "min_samples must be a u32".to_string())?,
+        max_gap: max_gap
+            .parse()
+            .map_err(|_| "max_gap must be a u64".to_string())?,
+    })
+}
+
 pub fn parse_weighted_keys(env: &Env, args: &[String]) -> Result<ResolutionSpec, String> {
     let [weight_threshold, dispute_window, keys @ ..] = args else {
         return Err(
@@ -387,13 +421,15 @@ pub fn parse_hybrid(env: &Env, args: &[String]) -> Result<ResolutionSpec, String
 }
 
 /// A parsed top-level rule. `Rule` is a legacy / V2-representable
-/// `ResolutionSpec`; `Scaled` is issue #26's decimal-explicit mode, which
-/// commits through its own domain-tagged preimage (`scaled_spec_hash`)
-/// because PR #176 made `oracledesk-types` the frozen canonical home of
+/// `ResolutionSpec`; `Scaled` is issue #26's decimal-explicit mode and
+/// `Twap` issue #27's averaged mode, each committing through its own
+/// domain-tagged preimage (`scaled_spec_hash` / `twap_spec_hash`) because
+/// PR #176 made `oracledesk-types` the frozen canonical home of
 /// `ResolutionSpec` (see `docs/adr/0001-resolution-commitment.md`).
 enum ParsedRule {
     Rule(ResolutionSpec),
     Scaled(ScaledPriceConfig),
+    Twap(TwapConfig),
 }
 
 fn parse_rule(env: &Env, args: &[String], decimal: Option<&str>) -> Result<ParsedRule, String> {
@@ -403,6 +439,7 @@ fn parse_rule(env: &Env, args: &[String], decimal: Option<&str>) -> Result<Parse
         [kind, rest @ ..] if kind == "price-scaled" => {
             Ok(ParsedRule::Scaled(parse_price_scaled(env, rest, decimal)?))
         }
+        [kind, rest @ ..] if kind == "price-twap" => Ok(ParsedRule::Twap(parse_price_twap(env, rest)?)),
         [kind, rest @ ..] if kind == "weighted-keys" => {
             Ok(ParsedRule::Rule(parse_weighted_keys(env, rest)?))
         }
@@ -411,7 +448,7 @@ fn parse_rule(env: &Env, args: &[String], decimal: Option<&str>) -> Result<Parse
         }
         [kind, rest @ ..] if kind == "committee" => Ok(ParsedRule::Rule(parse_committee(rest)?)),
         [kind, rest @ ..] if kind == "hybrid" => Ok(ParsedRule::Rule(parse_hybrid(env, rest)?)),
-        _ => Err("expected `signers`, `price`, `price-scaled`, `weighted-keys`, `signers-disputable`, `committee` or `hybrid`".into()),
+        _ => Err("expected `signers`, `price`, `price-scaled`, `price-twap`, `weighted-keys`, `signers-disputable`, `committee` or `hybrid`".into()),
     }
 }
 
@@ -426,6 +463,16 @@ fn commitment(env: &Env, rule: ParsedRule, v2: Option<V2Params>) -> Result<[u8; 
                 );
             }
             return Ok(scaled_spec_hash(env, &cfg).to_array());
+        }
+        ParsedRule::Twap(cfg) => {
+            if v2.is_some() {
+                return Err(
+                    "price-twap commits through its own domain-tagged preimage and does not \
+                     support the --v2 envelope"
+                        .into(),
+                );
+            }
+            return Ok(twap_spec_hash(env, &cfg).to_array());
         }
         ParsedRule::Rule(rule) => rule,
     };
@@ -835,6 +882,89 @@ mod tests {
     }
 
     #[test]
+    fn golden_price_twap_vector() {
+        // Issue #27, same discipline as `golden_price_scaled_vector`: the
+        // TWAP commitment is `sha256("oracledesk:price-twap-spec" ||
+        // XDR(TwapConfig))` and the CLI delegates to the contract's own
+        // `twap_spec_hash`, so tool and contract cannot drift. The pinned
+        // golden vectors of `golden_legacy_vectors` (unchanged by this
+        // subcommand's addition) prove every existing Price/Signers/V2 hash
+        // stays byte-identical; a literal digest for the twap space is not
+        // derivable by an in-tree host run while `oracledesk-types` fails
+        // to compile, so this test pins delegation + disjointness instead
+        // (listed maintainer follow-up, same as the scaled pin).
+        let raw = hash_of(&[
+            "price-twap",
+            C1,
+            "other:XLM",
+            "2000",
+            "above",
+            "3600",
+            "6",
+            "900",
+        ]);
+        assert_eq!(raw.len(), 64);
+        assert!(raw.chars().all(|c| c.is_ascii_hexdigit()));
+
+        let env = Env::default();
+        let cfg = TwapConfig {
+            reflector: parse_address(&env, C1).unwrap(),
+            asset: parse_asset(&env, "other:XLM").unwrap(),
+            threshold: 2_000,
+            direction: PriceDirection::Above,
+            window: 3_600,
+            min_samples: 6,
+            max_gap: 900,
+        };
+        assert_eq!(raw, to_hex(&twap_spec_hash(&env, &cfg).to_array()));
+
+        // Disjoint hash spaces: the same numbers read as a single-price or
+        // signers rule, or as a scaled rule, never collide with the TWAP
+        // preimage.
+        assert_ne!(
+            raw,
+            hash_of(&["price", C1, "other:XLM", "2000", "above", "10"])
+        );
+        assert_ne!(raw, hash_of(&["signers", "1", "5", G1]));
+        assert_ne!(
+            raw,
+            hash_of(&["price-scaled", C1, "other:XLM", "2000", "2", "above", "600"])
+        );
+
+        // verify round-trips the new kind, and the ADR-0001 promise the
+        // issue demands: a `price` vector through `verify` still matches.
+        assert_eq!(
+            hash_of(&[
+                "verify",
+                &raw,
+                "price-twap",
+                C1,
+                "other:XLM",
+                "2000",
+                "above",
+                "3600",
+                "6",
+                "900"
+            ]),
+            "match"
+        );
+
+        // The V2 envelope wraps a `ResolutionSpec` and rejects a twap rule.
+        let mut v2_twap = v2_args(SALT, "Test SDF Network ; September 2015", C1);
+        v2_twap.extend_from_slice(&[
+            "price-twap",
+            C1,
+            "other:XLM",
+            "2000",
+            "above",
+            "3600",
+            "6",
+            "900",
+        ]);
+        assert!(matches!(run(&args(&v2_twap)), Err(CliError::Usage(_))));
+    }
+
+    #[test]
     fn decimal_amount_is_exact_and_bounded() {
         assert_eq!(parse_decimal_amount("0.20").unwrap(), (20, 2));
         assert_eq!(parse_decimal_amount("20").unwrap(), (20, 0));
@@ -885,6 +1015,32 @@ mod tests {
                 "1",
                 "--decimal",
                 "-0.2",
+            ]),
+            args(&["price-twap", C1, "other:XLM", "1", "above", "60"]),
+            args(&["price-twap", C1, "bogus", "1", "above", "60", "2", "10"]),
+            args(&[
+                "price-twap",
+                C1,
+                "other:XLM",
+                "1",
+                "sideways",
+                "60",
+                "2",
+                "10",
+            ]),
+            args(&["price-twap", C1, "other:XLM", "1", "above", "x", "2", "10"]),
+            args(&["price-twap", C1, "other:XLM", "1", "above", "60", "y", "10"]),
+            args(&[
+                "--decimal",
+                "0.2",
+                "price-twap",
+                C1,
+                "other:XLM",
+                "1",
+                "above",
+                "60",
+                "2",
+                "10",
             ]),
             args(&["weighted-keys", "2", "60", "nocolon"]),
             args(&["weighted-keys", "2", "60", "zz:1"]),
