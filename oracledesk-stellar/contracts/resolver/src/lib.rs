@@ -3277,14 +3277,82 @@ mod test {
         BytesN, IntoVal,
     };
 
-    /// Faithful SEP-40 feed (issue #26), replacing the old `MockReflector`,
-    /// which returned one stored `PriceData` for every asset and timestamp and
-    /// so hid the decimals, grid-alignment and bad-price bugs. This mock:
-    /// stores per-asset histories, reports configurable `decimals()` and
-    /// `resolution()`, returns `Some` from `price(asset, ts)` only on exact
-    /// record timestamps (gaps and off-grid queries are `None`, like
-    /// Reflector), and `lastprice(asset)` gives the newest record.
-    /// `set_panic(true)` makes every entrypoint trap like a broken feed.
+    // ---- dual registration of market-core (coverage, issue #75) ---------------
+    //
+    // The wasm copy is what ships and what ADR 0002 requires the contract to be
+    // *built* against, but code running inside the wasm VM is invisible to
+    // `cargo llvm-cov`. A native `market-core` registration (a dev-dependency:
+    // the duplicate `__constructor` export that forbids this in the wasm build
+    // does not exist in a native test binary) runs the same scenarios as host
+    // code. `MARKET_CORE_IMPL=native cargo test` flips the whole suite;
+    // `both_modes!` pins individual scenarios to both.
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum McImpl {
+        Wasm,
+        Native,
+    }
+
+    std::thread_local! {
+        static MC_OVERRIDE: core::cell::Cell<Option<McImpl>> = const { core::cell::Cell::new(None) };
+    }
+
+    fn mc_impl() -> McImpl {
+        MC_OVERRIDE.with(|c| c.get()).unwrap_or_else(|| {
+            match std::env::var("MARKET_CORE_IMPL").as_deref() {
+                Ok("native") => McImpl::Native,
+                _ => McImpl::Wasm,
+            }
+        })
+    }
+
+    /// Runs `f` with market-core registered as `how`, restoring the previous
+    /// choice even if `f` panics.
+    fn with_market_core<R>(how: McImpl, f: impl FnOnce() -> R) -> R {
+        struct Restore(Option<McImpl>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                MC_OVERRIDE.with(|c| c.set(self.0));
+            }
+        }
+        let _restore = Restore(MC_OVERRIDE.with(|c| c.replace(Some(how))));
+        f()
+    }
+
+    /// `(admin, collateral, treasury, resolver, default_fee_bps, protocol_share_bps)`.
+    fn register_market_core(
+        env: &Env,
+        args: (Address, Address, Address, Address, u32, u32),
+    ) -> Address {
+        match mc_impl() {
+            McImpl::Wasm => env.register(market_core::WASM, args),
+            McImpl::Native => env.register(
+                ::market_core_native::MarketCore,
+                ::market_core_native::MarketCoreArgs::__constructor(
+                    &args.0, &args.1, &args.2, &args.3, &args.4, &args.5,
+                ),
+            ),
+        }
+    }
+
+    /// Re-runs existing scenario tests (`#[test]` functions are plain functions
+    /// too) once per market-core registration, as `<name>::wasm` and
+    /// `<name>::native`.
+    macro_rules! both_modes {
+        ($($name:ident),+ $(,)?) => {$(
+            mod $name {
+                #[test]
+                fn wasm() {
+                    super::with_market_core(super::McImpl::Wasm, super::$name);
+                }
+                #[test]
+                fn native() {
+                    super::with_market_core(super::McImpl::Native, super::$name);
+                }
+            }
+        )+};
+    }
+
     #[contract]
     struct Sep40Mock;
 
@@ -3464,8 +3532,8 @@ mod test {
         token.mint(&creator, &(1_000 * 10_000_000_i128));
 
         let spec = spec_fn(&env, &reflector_id, &signer_a, &signer_b);
-        let market_core_id = env.register(
-            market_core::WASM,
+        let market_core_id = register_market_core(
+            &env,
             (
                 admin.clone(),
                 collateral.address(),
@@ -5942,1335 +6010,360 @@ mod test {
             .is_err());
     }
 
-    // ----- SEP-40 grid alignment, bad prices and preview (issue #26) ------
+    // ---- model_trace_*: conformance replays of docs/formal/resolver.tla ----
+    //
+    // Each test replays a trace produced by TLC (see docs/formal/README.md
+    // for the config that yields it) against the real contracts. The fixture
+    // has 2 signers, threshold 2, dispute window 100, close_time 2_000.
 
-    /// Installs exact-timestamp history on the fixture's `Sep40Mock` for the
-    /// XLM asset that `price_spec_at` commits to.
-    fn feed_history<const N: usize>(f: &Fixture, records: [PriceData; N]) {
-        Sep40MockClient::new(&f.env, &f.reflector_id).set_history(
-            &OracleAsset::Other(Symbol::new(&f.env, "XLM")),
-            &Vec::from_array(&f.env, records),
-        );
+    fn market_status(f: &Fixture) -> MarketStatus {
+        f.market_core.get_market(&f.market_id).status
     }
 
-    fn arm_and_resolve(f: &Fixture, spec: &PriceConfig, resolve_at: u64) -> Outcome {
-        f.resolver.register_price_spec(&f.market_id, spec);
-        f.env.ledger().set_timestamp(resolve_at);
-        f.resolver.resolve_price(&f.market_id)
-    }
-
+    /// resolver.cfg happy path: RegisterSigners, Tick, Attest, Attest,
+    /// Tick x W, Finalize.
     #[test]
-    fn price_lookup_aligns_to_resolution_grid() {
-        // close_time 1_000_123 is not on the 300 s grid; a real SEP-40 feed
-        // answers `None` for any off-grid timestamp. The lookup must query
-        // floor(1_000_123 / 300) * 300 = 999_900 (issue #26, bug 2).
-        let f = fixture_at(1_000_123, |env, reflector, _a, _b| {
-            ResolutionSpec::Price(price_spec_at(
-                env,
-                reflector,
-                2_000,
-                PriceDirection::Above,
-                300,
-            ))
-        });
-        let ResolutionSpec::Price(spec) = f.spec.clone() else {
-            unreachable!()
-        };
-        Sep40MockClient::new(&f.env, &f.reflector_id).set_config(&14, &300);
-        feed_history(
-            &f,
-            [PriceData {
-                price: 2_500,
-                timestamp: 999_900,
-            }],
-        );
-        assert_eq!(arm_and_resolve(&f, &spec, 1_000_200), Outcome::Yes);
-        assert_eq!(last_price_resolution(&f).price_timestamp, 999_900);
-    }
-
-    #[test]
-    fn price_lookup_walks_back_within_staleness() {
-        // Grid 300, close 2_000 -> aligned 1_800. Only 1_500 has a record;
-        // it is 500 s stale, which max_staleness 600 accepts.
-        let f = fixture(|env, reflector, _a, _b| {
-            ResolutionSpec::Price(price_spec_at(
-                env,
-                reflector,
-                2_000,
-                PriceDirection::Above,
-                600,
-            ))
-        });
-        let ResolutionSpec::Price(spec) = f.spec.clone() else {
-            unreachable!()
-        };
-        Sep40MockClient::new(&f.env, &f.reflector_id).set_config(&14, &300);
-        feed_history(
-            &f,
-            [PriceData {
-                price: 2_500,
-                timestamp: 1_500,
-            }],
-        );
-        assert_eq!(arm_and_resolve(&f, &spec, 2_000), Outcome::Yes);
-        assert_eq!(last_price_resolution(&f).price_timestamp, 1_500);
-    }
-
-    #[test]
-    fn price_lookup_stale_beyond_max_staleness() {
-        // Same grid and record, but max_staleness 300: the walkback stops at
-        // the 1_800 step (the next candidate would be 500 s stale) and
-        // reports StalePrice without querying 1_500.
-        let f = fixture(|env, reflector, _a, _b| {
-            ResolutionSpec::Price(price_spec_at(
-                env,
-                reflector,
-                2_000,
-                PriceDirection::Above,
-                300,
-            ))
-        });
-        let ResolutionSpec::Price(spec) = f.spec.clone() else {
-            unreachable!()
-        };
-        Sep40MockClient::new(&f.env, &f.reflector_id).set_config(&14, &300);
-        feed_history(
-            &f,
-            [PriceData {
-                price: 2_500,
-                timestamp: 1_500,
-            }],
-        );
-        f.resolver.register_price_spec(&f.market_id, &spec);
-        f.env.ledger().set_timestamp(2_000);
-        assert_eq!(
-            f.resolver.try_resolve_price(&f.market_id),
-            Err(Ok(Error::StalePrice))
-        );
-    }
-
-    #[test]
-    fn price_lookup_exact_boundary_staleness() {
-        // Grid 30, close 1_980, record at 1_890: exactly 90 s stale.
-        // max_staleness 90 accepts (`>` comparison), 89 is StalePrice.
-        let ok = fixture_at(1_980, |env, reflector, _a, _b| {
-            ResolutionSpec::Price(price_spec_at(
-                env,
-                reflector,
-                2_000,
-                PriceDirection::Above,
-                90,
-            ))
-        });
-        let ResolutionSpec::Price(spec) = ok.spec.clone() else {
-            unreachable!()
-        };
-        Sep40MockClient::new(&ok.env, &ok.reflector_id).set_config(&14, &30);
-        feed_history(
-            &ok,
-            [PriceData {
-                price: 2_500,
-                timestamp: 1_890,
-            }],
-        );
-        assert_eq!(arm_and_resolve(&ok, &spec, 1_980), Outcome::Yes);
-
-        let tight = fixture_at(1_980, |env, reflector, _a, _b| {
-            ResolutionSpec::Price(price_spec_at(
-                env,
-                reflector,
-                2_000,
-                PriceDirection::Above,
-                89,
-            ))
-        });
-        let ResolutionSpec::Price(spec) = tight.spec.clone() else {
-            unreachable!()
-        };
-        Sep40MockClient::new(&tight.env, &tight.reflector_id).set_config(&14, &30);
-        feed_history(
-            &tight,
-            [PriceData {
-                price: 2_500,
-                timestamp: 1_890,
-            }],
-        );
-        tight.resolver.register_price_spec(&tight.market_id, &spec);
-        tight.env.ledger().set_timestamp(1_980);
-        assert_eq!(
-            tight.resolver.try_resolve_price(&tight.market_id),
-            Err(Ok(Error::StalePrice))
-        );
-    }
-
-    #[test]
-    fn price_lookup_lookback_is_bounded() {
-        // Grid 30 with max_staleness 600 would allow 20 records, but the
-        // walkback is capped at MAX_LOOKBACK_RECORDS (12) cross-contract
-        // calls: the record at 1_620 (380 s stale, within staleness) sits
-        // beyond the cap and the resolution reports StalePrice.
-        let f = fixture(|env, reflector, _a, _b| {
-            ResolutionSpec::Price(price_spec_at(
-                env,
-                reflector,
-                2_000,
-                PriceDirection::Above,
-                600,
-            ))
-        });
-        let ResolutionSpec::Price(spec) = f.spec.clone() else {
-            unreachable!()
-        };
-        Sep40MockClient::new(&f.env, &f.reflector_id).set_config(&14, &30);
-        feed_history(
-            &f,
-            [PriceData {
-                price: 2_500,
-                timestamp: 2_000 - 13 * 30,
-            }],
-        );
-        f.resolver.register_price_spec(&f.market_id, &spec);
-        f.env.ledger().set_timestamp(2_000);
-        assert_eq!(
-            f.resolver.try_resolve_price(&f.market_id),
-            Err(Ok(Error::StalePrice))
-        );
-    }
-
-    #[test]
-    fn resolution_zero_rejected() {
-        // A `resolution()` of 0 would divide by zero; it is a broken feed
-        // and reports InvalidPrice (issue #26 edge case).
-        let f = fixture(|env, reflector, _a, _b| {
-            ResolutionSpec::Price(price_spec_at(
-                env,
-                reflector,
-                2_000,
-                PriceDirection::Above,
-                10,
-            ))
-        });
-        let ResolutionSpec::Price(spec) = f.spec.clone() else {
-            unreachable!()
-        };
-        Sep40MockClient::new(&f.env, &f.reflector_id).set_config(&14, &0);
-        feed_history(
-            &f,
-            [PriceData {
-                price: 2_500,
-                timestamp: 1_999,
-            }],
-        );
-        f.resolver.register_price_spec(&f.market_id, &spec);
-        f.env.ledger().set_timestamp(2_000);
-        assert_eq!(
-            f.resolver.try_resolve_price(&f.market_id),
-            Err(Ok(Error::InvalidPrice))
-        );
-    }
-
-    #[test]
-    fn rejects_zero_and_negative_price() {
-        // Issue #26 bug 3: price <= 0 must be InvalidPrice, on both the
-        // live read and the snapshot path (a snapshot can never pin a price
-        // resolution would reject).
-        for price in [0_i128, -1, -2_500] {
-            let f = price_fixture(price, 1_999);
-            f.env.ledger().set_timestamp(2_000);
-            assert_eq!(
-                f.resolver.try_resolve_price(&f.market_id),
-                Err(Ok(Error::InvalidPrice)),
-                "price {price}"
-            );
-            let caller = Address::generate(&f.env);
-            assert_eq!(
-                f.resolver.try_snapshot_price(&f.market_id, &caller),
-                Err(Ok(Error::InvalidPrice)),
-                "price {price}"
-            );
-            assert_eq!(f.resolver.snapshot(&f.market_id), None);
-        }
-    }
-
-    #[test]
-    fn price_matrix_all_directions_equal_above_below() {
-        // 4 directions x {below, equal, above} the committed threshold.
-        let cases = [
-            (
-                PriceDirection::Above,
-                Outcome::No,
-                Outcome::No,
-                Outcome::Yes,
-            ),
-            (
-                PriceDirection::AtOrAbove,
-                Outcome::No,
-                Outcome::Yes,
-                Outcome::Yes,
-            ),
-            (
-                PriceDirection::Below,
-                Outcome::Yes,
-                Outcome::No,
-                Outcome::No,
-            ),
-            (
-                PriceDirection::AtOrBelow,
-                Outcome::Yes,
-                Outcome::Yes,
-                Outcome::No,
-            ),
-        ];
-        for (direction, below, equal, above) in cases {
-            for (price, expected) in [(1_999_i128, below), (2_000, equal), (2_001, above)] {
-                let f = fixture_at(2_000, move |env, reflector, _a, _b| {
-                    ResolutionSpec::Price(price_spec_at(env, reflector, 2_000, direction, 10))
-                });
-                let ResolutionSpec::Price(spec) = f.spec.clone() else {
-                    unreachable!()
-                };
-                feed_history(
-                    &f,
-                    [PriceData {
-                        price,
-                        timestamp: 1_999,
-                    }],
-                );
-                assert_eq!(
-                    arm_and_resolve(&f, &spec, 2_000),
-                    expected,
-                    "direction {direction:?} price {price}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn price_lookup_ignores_records_of_other_assets() {
-        // The mock's history is per-asset: a record for BTC does not answer
-        // a market on XLM. The walkback exhausts and reports StalePrice;
-        // the guardian voids under OracleUnavailable after the grace.
-        let f = fixture(|env, reflector, _a, _b| {
-            ResolutionSpec::Price(price_spec_at(
-                env,
-                reflector,
-                2_000,
-                PriceDirection::Above,
-                10,
-            ))
-        });
-        let ResolutionSpec::Price(spec) = f.spec.clone() else {
-            unreachable!()
-        };
-        Sep40MockClient::new(&f.env, &f.reflector_id).set_config(&14, &1);
-        Sep40MockClient::new(&f.env, &f.reflector_id).set_history(
-            &OracleAsset::Other(Symbol::new(&f.env, "BTC")),
-            &Vec::from_array(
-                &f.env,
-                [PriceData {
-                    price: 2_500,
-                    timestamp: 1_999,
-                }],
-            ),
-        );
-        f.resolver.register_price_spec(&f.market_id, &spec);
-        f.env.ledger().set_timestamp(2_000);
-        assert_eq!(
-            f.resolver.try_resolve_price(&f.market_id),
-            Err(Ok(Error::StalePrice))
-        );
-    }
-
-    #[test]
-    fn preview_price_returns_newest_record_without_resolving() {
-        // `preview_price` is the only consumer of `lastprice` (issue #26
-        // goal 4); it must not touch the market's state.
-        let f = fixture(|env, reflector, _a, _b| ResolutionSpec::Price(price_spec(env, reflector)));
-        let ResolutionSpec::Price(spec) = f.spec.clone() else {
-            unreachable!()
-        };
-        Sep40MockClient::new(&f.env, &f.reflector_id).set_config(&14, &300);
-        feed_history(
-            &f,
-            [
-                PriceData {
-                    price: 100,
-                    timestamp: 1_800,
-                },
-                PriceData {
-                    price: 2_500,
-                    timestamp: 1_999,
-                },
-            ],
-        );
-        f.resolver.register_price_spec(&f.market_id, &spec);
-        f.env.ledger().set_timestamp(2_000);
-        assert_eq!(
-            f.resolver.preview_price(&f.market_id),
-            PriceData {
-                price: 2_500,
-                timestamp: 1_999,
-            }
-        );
-        assert_eq!(
-            f.resolver.state(&f.market_id),
-            ResolutionState::Unconfigured
-        );
-        assert_eq!(
-            f.market_core.get_market(&f.market_id).status,
-            MarketStatus::Open
-        );
-    }
-
-    #[test]
-    fn preview_price_wrong_mode_for_signer_markets() {
+    fn model_trace_signers_happy_path_yes() {
         let f = signer_fixture();
         assert_eq!(
-            f.resolver.try_preview_price(&f.market_id),
-            Err(Ok(Error::WrongMode))
+            f.resolver.state(&f.market_id),
+            ResolutionState::SignersPending
         );
-    }
-
-    #[test]
-    fn price_feed_panic_is_price_unavailable() {
-        // set_panic models a broken feed: every entrypoint traps, and the
-        // resolver converts that to PriceUnavailable, never a host error.
-        let f = fixture(|env, reflector, _a, _b| ResolutionSpec::Price(price_spec(env, reflector)));
-        let ResolutionSpec::Price(spec) = f.spec.clone() else {
-            unreachable!()
-        };
-        feed_history(
-            &f,
-            [PriceData {
-                price: 2_500,
-                timestamp: 1_999,
-            }],
-        );
-        Sep40MockClient::new(&f.env, &f.reflector_id).set_panic(&true);
-        f.resolver.register_price_spec(&f.market_id, &spec);
         f.env.ledger().set_timestamp(2_000);
+        attest_both(&f, AttestedOutcome::Yes);
+        assert_eq!(market_status(&f), MarketStatus::Open);
         assert_eq!(
-            f.resolver.try_resolve_price(&f.market_id),
-            Err(Ok(Error::PriceUnavailable))
+            f.resolver.try_finalize_signers(&f.market_id),
+            Err(Ok(Error::DisputeWindowOpen))
         );
+        f.env.ledger().set_timestamp(2_100);
+        assert_eq!(
+            f.resolver.finalize_signers(&f.market_id),
+            AttestedOutcome::Yes
+        );
+        assert_eq!(market_status(&f), MarketStatus::Resolved(Outcome::Yes));
+        assert_eq!(f.resolver.state(&f.market_id), ResolutionState::Finalized);
+        // FinalImpliesClosed + AtMostOnceFinal: nothing can change it again.
+        assert_eq!(
+            f.resolver
+                .try_attest(&f.market_id, &f.signer_a, &AttestedOutcome::No),
+            Err(Ok(Error::AlreadyFinalized))
+        );
+        assert!(f.resolver.try_finalize_signers(&f.market_id).is_err());
+        assert_eq!(market_status(&f), MarketStatus::Resolved(Outcome::Yes));
     }
 
-    // ----- decimal-scaled threshold specs (issue #26, goal 2) -------------
-
-    fn scaled_price_spec(
-        env: &Env,
-        reflector: &Address,
-        threshold: i128,
-        threshold_decimals: u32,
-        direction: PriceDirection,
-        max_staleness: u64,
-    ) -> ScaledPriceConfig {
-        ScaledPriceConfig {
-            reflector: reflector.clone(),
-            asset: OracleAsset::Other(Symbol::new(env, "XLM")),
-            threshold,
-            threshold_decimals,
-            direction,
-            max_staleness,
-        }
-    }
-
-    /// [`scaled_fixture_at`] at the default `close_time` of 2_000.
-    fn scaled_fixture(
-        spec_fn: impl FnOnce(&Env, &Address, &Address, &Address) -> ScaledPriceConfig,
-    ) -> (Fixture, ScaledPriceConfig) {
-        scaled_fixture_at(2_000, spec_fn)
-    }
-
+    /// resolver.cfg happy path in price mode: RegisterPrice, Tick, ResolvePrice.
+    /// Price mode never enters `SignersPending`.
     #[test]
-    fn legacy_price_spec_semantics_are_feed_native_and_hash_unchanged() {
-        // A legacy `Price` threshold is compared raw against the feed price
-        // no matter what `decimals()` reports: 2_500 is "above" 2_000 even on
-        // a 14-decimal feed (issue #26: committed markets must not change
-        // meaning). `mod golden` pins the commitment-hash side of that
-        // promise; the spec-hash CLI has the same vectors.
+    fn model_trace_price_happy_path_yes() {
         let f = price_fixture(2_500, 1_999);
-        Sep40MockClient::new(&f.env, &f.reflector_id).set_config(&14, &1);
-        f.env.ledger().set_timestamp(2_000);
-        assert_eq!(f.resolver.resolve_price(&f.market_id), Outcome::Yes);
-    }
-
-    #[test]
-    fn scaled_spec_compares_across_decimals() {
-        // "$0.20" committed as threshold 20 with threshold_decimals 2 against
-        // a 14-decimal feed reporting $0.25 (2.5e13): both sides rescale to
-        // 14 decimals, 2.5e13 > 2e13 -> Yes.
-        let (f, spec) = scaled_fixture(|env, reflector, _a, _b| {
-            scaled_price_spec(env, reflector, 20, 2, PriceDirection::Above, 10)
-        });
-        Sep40MockClient::new(&f.env, &f.reflector_id).set_config(&14, &1);
-        feed_history(
-            &f,
-            [PriceData {
-                price: 25_000_000_000_000,
-                timestamp: 1_999,
-            }],
-        );
-        f.resolver.register_scaled_price_spec(&f.market_id, &spec);
-        f.env.ledger().set_timestamp(2_000);
-        assert_eq!(f.resolver.resolve_price(&f.market_id), Outcome::Yes);
-    }
-
-    #[test]
-    fn scaled_spec_equality_boundary() {
-        // Exactly $0.20 on a 14-decimal feed vs the 20@2 threshold:
-        // Above -> No, AtOrAbove -> Yes.
-        for (direction, expected) in [
-            (PriceDirection::Above, Outcome::No),
-            (PriceDirection::AtOrAbove, Outcome::Yes),
-        ] {
-            let (f, spec) = scaled_fixture(|env, reflector, _a, _b| {
-                scaled_price_spec(env, reflector, 20, 2, direction, 10)
-            });
-            Sep40MockClient::new(&f.env, &f.reflector_id).set_config(&14, &1);
-            feed_history(
-                &f,
-                [PriceData {
-                    price: 20_000_000_000_000,
-                    timestamp: 1_999,
-                }],
-            );
-            f.resolver.register_scaled_price_spec(&f.market_id, &spec);
-            f.env.ledger().set_timestamp(2_000);
-            assert_eq!(
-                f.resolver.resolve_price(&f.market_id),
-                expected,
-                "direction {direction:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn scaled_spec_resolves_on_grid_and_emits_scaled_event() {
-        // Full stack: off-grid close, 300 s grid, 14-decimal feed, threshold
-        // 20@2. Lookup lands on 999_900; PriceResolutionScaled carries the
-        // decimals metadata alongside the unchanged events.
-        let (f, spec) = scaled_fixture_at(1_000_123, |env, reflector, _a, _b| {
-            scaled_price_spec(env, reflector, 20, 2, PriceDirection::Above, 300)
-        });
-        let feed = Sep40MockClient::new(&f.env, &f.reflector_id);
-        feed.set_config(&14, &300);
-        feed.set_history(
-            &spec.asset,
-            &Vec::from_array(
-                &f.env,
-                [PriceData {
-                    price: 25_000_000_000_000,
-                    timestamp: 999_900,
-                }],
-            ),
-        );
-        f.resolver.register_scaled_price_spec(&f.market_id, &spec);
-        f.env.ledger().set_timestamp(1_000_200);
-        assert_eq!(f.resolver.resolve_price(&f.market_id), Outcome::Yes);
-
-        use soroban_sdk::{xdr, TryFromVal};
-        let events = f.env.events().all().filter_by_contract(&f.resolver_id);
-        let last = events.events().last().unwrap().clone();
-        let xdr::ContractEventBody::V0(body) = last.body;
-        let data = soroban_sdk::Val::try_from_val(&f.env, &body.data).unwrap();
-        let map: soroban_sdk::Map<Symbol, soroban_sdk::Val> =
-            soroban_sdk::Map::try_from_val(&f.env, &data).unwrap();
-        let get = |name: &str| map.get(Symbol::new(&f.env, name)).unwrap();
         assert_eq!(
-            i128::try_from_val(&f.env, &get("raw_price")).unwrap(),
-            25_000_000_000_000
+            f.resolver.state(&f.market_id),
+            ResolutionState::Unconfigured
         );
-        assert_eq!(
-            u32::try_from_val(&f.env, &get("feed_decimals")).unwrap(),
-            14
-        );
-        assert_eq!(
-            i128::try_from_val(&f.env, &get("threshold_scaled")).unwrap(),
-            20_000_000_000_000
-        );
-        assert_eq!(
-            u64::try_from_val(&f.env, &get("lookup_timestamp")).unwrap(),
-            999_900
-        );
-        assert_eq!(
-            Outcome::try_from_val(&f.env, &get("outcome")).unwrap(),
-            Outcome::Yes
-        );
-    }
-
-    #[test]
-    fn scaled_spec_overflow_rejected() {
-        // threshold_decimals above i128 scale capacity: InvalidConfig at
-        // reveal, before any oracle read.
-        let (f, spec) = scaled_fixture(|env, reflector, _a, _b| {
-            scaled_price_spec(
-                env,
-                reflector,
-                20,
-                MAX_THRESHOLD_DECIMALS + 1,
-                PriceDirection::Above,
-                10,
-            )
-        });
-        assert_eq!(
-            f.resolver
-                .try_register_scaled_price_spec(&f.market_id, &spec),
-            Err(Ok(Error::InvalidConfig))
-        );
-
-        // A feed claiming 40 decimals: the 20@2 threshold cannot be rescaled
-        // to 40 decimals inside i128; InvalidPrice at resolution, and the
-        // market stays unresolved.
-        let (f, spec) = scaled_fixture(|env, reflector, _a, _b| {
-            scaled_price_spec(env, reflector, 20, 2, PriceDirection::Above, 10)
-        });
-        Sep40MockClient::new(&f.env, &f.reflector_id).set_config(&40, &1);
-        feed_history(
-            &f,
-            [PriceData {
-                price: 2_500,
-                timestamp: 1_999,
-            }],
-        );
-        f.resolver.register_scaled_price_spec(&f.market_id, &spec);
-        f.env.ledger().set_timestamp(2_000);
+        f.env.ledger().set_timestamp(1_500);
         assert_eq!(
             f.resolver.try_resolve_price(&f.market_id),
-            Err(Ok(Error::InvalidPrice))
-        );
-        assert_eq!(
-            f.resolver.state(&f.market_id),
-            ResolutionState::Unconfigured
-        );
-    }
-
-    #[test]
-    fn scaled_and_legacy_specs_are_mutually_exclusive() {
-        // assert_unconfigured must see PriceScaled: a market with a revealed
-        // legacy price spec cannot also reveal a scaled one (and vice versa),
-        // regardless of the commitment matching.
-        let f = fixture(|env, reflector, _a, _b| ResolutionSpec::Price(price_spec(env, reflector)));
-        let ResolutionSpec::Price(spec) = f.spec.clone() else {
-            unreachable!()
-        };
-        f.resolver.register_price_spec(&f.market_id, &spec);
-        let scaled = scaled_price_spec(&f.env, &f.reflector_id, 20, 2, PriceDirection::Above, 10);
-        assert_eq!(
-            f.resolver
-                .try_register_scaled_price_spec(&f.market_id, &scaled),
-            Err(Ok(Error::MarketAlreadyConfigured))
-        );
-
-        let (g, spec) = scaled_fixture(|env, reflector, _a, _b| {
-            scaled_price_spec(env, reflector, 20, 2, PriceDirection::Above, 10)
-        });
-        g.resolver.register_scaled_price_spec(&g.market_id, &spec);
-        let legacy = price_spec(&g.env, &g.reflector_id);
-        assert_eq!(
-            g.resolver.try_register_price_spec(&g.market_id, &legacy),
-            Err(Ok(Error::MarketAlreadyConfigured))
-        );
-        // Scaled markets are WrongMode for the raw-price snapshot and
-        // preview helpers, which understand only the legacy shape.
-        g.env.ledger().set_timestamp(2_000);
-        assert_eq!(
-            g.resolver
-                .try_snapshot_price(&g.market_id, &Address::generate(&g.env)),
-            Err(Ok(Error::WrongMode))
-        );
-        assert_eq!(
-            g.resolver.try_preview_price(&g.market_id),
-            Err(Ok(Error::WrongMode))
-        );
-    }
-
-    // ----- TWAP resolution specs (issue #27) -------------------------------
-
-    /// Registers `spec` on a fresh TWAP market after configuring the mock
-    /// feed's `resolution()`, and returns the fixture. `min_samples >= 2`
-    /// and `window / resolution <= MAX_TWAP_SAMPLES` feasibility is checked
-    /// at reveal, so the feed config must be in place first.
-    fn arm_twap(f: &Fixture, spec: &TwapConfig) {
-        f.resolver.register_twap_spec(&f.market_id, spec);
-    }
-
-    /// Decodes the `from_end`-th (0 = newest) resolver event payload into a
-    /// field map, mirroring the scaled-event test's decoding.
-    fn twap_event_fields(f: &Fixture, from_end: u32) -> soroban_sdk::Map<Symbol, soroban_sdk::Val> {
-        use soroban_sdk::{xdr, TryFromVal};
-        let events = f.env.events().all().filter_by_contract(&f.resolver_id);
-        let events = events.events();
-        let event = events[events.len() - 1 - from_end as usize].clone();
-        let xdr::ContractEventBody::V0(body) = event.body;
-        let data = soroban_sdk::Val::try_from_val(&f.env, &body.data).unwrap();
-        soroban_sdk::Map::try_from_val(&f.env, &data).unwrap()
-    }
-
-    /// The standard feasible TWAP config used across these tests: 100 s
-    /// grid, 1000 s window, two samples minimum, and `max_gap` wide enough
-    /// that only the test's own history shapes can trip the gap rules.
-    fn twap_standard_spec(env: &Env, reflector: &Address) -> TwapConfig {
-        twap_price_spec(env, reflector, 1_000, PriceDirection::Above, 1_000, 2, 900)
-    }
-
-    #[test]
-    fn twap_resolves_yes_when_average_above_threshold_despite_last_print_below() {
-        // The manipulation case from the issue's motivation, inverted: the
-        // newest print (100) is far below the 1000 threshold, but the
-        // window's time-weighted average is ~1997 -> Yes. A single-price
-        // market would have answered No on this history.
-        let (f, spec) = twap_fixture(|env, reflector, _a, _b| {
-            twap_price_spec(env, reflector, 1_000, PriceDirection::Above, 1_000, 3, 600)
-        });
-        Sep40MockClient::new(&f.env, &f.reflector_id).set_config(&14, &100);
-        feed_history(
-            &f,
-            [
-                PriceData {
-                    price: 2_000,
-                    timestamp: 1_200,
-                },
-                PriceData {
-                    price: 2_000,
-                    timestamp: 1_800,
-                },
-                PriceData {
-                    price: 100,
-                    timestamp: 2_000,
-                },
-            ],
-        );
-        arm_twap(&f, &spec);
-        f.env.ledger().set_timestamp(2_000);
-        // 2000*600 + 2000*200 + 100*1 = 1_600_100 over 801 s -> 1997.
-        assert_eq!(f.resolver.resolve_twap(&f.market_id), Outcome::Yes);
-    }
-
-    #[test]
-    fn twap_resolves_no_when_single_spike_at_close() {
-        // 9000 at the closing slot cannot carry the ~111 average over the
-        // 1000 threshold: the spike that would decide a single-print market
-        // is diluted by the window.
-        let (f, spec) = twap_fixture(|env, reflector, _a, _b| {
-            twap_price_spec(env, reflector, 1_000, PriceDirection::Above, 1_000, 3, 600)
-        });
-        Sep40MockClient::new(&f.env, &f.reflector_id).set_config(&14, &100);
-        feed_history(
-            &f,
-            [
-                PriceData {
-                    price: 100,
-                    timestamp: 1_200,
-                },
-                PriceData {
-                    price: 100,
-                    timestamp: 1_800,
-                },
-                PriceData {
-                    price: 9_000,
-                    timestamp: 2_000,
-                },
-            ],
-        );
-        arm_twap(&f, &spec);
-        f.env.ledger().set_timestamp(2_000);
-        assert_eq!(f.resolver.resolve_twap(&f.market_id), Outcome::No);
-    }
-
-    #[test]
-    fn twap_rejects_insufficient_samples() {
-        // Two of the three required samples are present and every gap is
-        // within max_gap; only min_samples fails -> StalePrice, state
-        // untouched.
-        let (f, spec) = twap_fixture(|env, reflector, _a, _b| {
-            twap_price_spec(env, reflector, 1_000, PriceDirection::Above, 1_000, 3, 900)
-        });
-        Sep40MockClient::new(&f.env, &f.reflector_id).set_config(&14, &100);
-        feed_history(
-            &f,
-            [
-                PriceData {
-                    price: 500,
-                    timestamp: 1_900,
-                },
-                PriceData {
-                    price: 2_000,
-                    timestamp: 2_000,
-                },
-            ],
-        );
-        arm_twap(&f, &spec);
-        f.env.ledger().set_timestamp(2_000);
-        assert_eq!(
-            f.resolver.try_resolve_twap(&f.market_id),
-            Err(Ok(Error::StalePrice))
-        );
-        assert_eq!(
-            f.resolver.state(&f.market_id),
-            ResolutionState::Unconfigured
-        );
-        assert_eq!(
-            f.market_core.get_market(&f.market_id).status,
-            MarketStatus::Open
-        );
-    }
-
-    #[test]
-    fn twap_rejects_gap_larger_than_max_gap() {
-        // All three gap kinds independently: window start -> first sample,
-        // consecutive samples, last sample -> close_time. Each history
-        // satisfies min_samples and would otherwise resolve Yes.
-        let cases: [([PriceData; 2], &str); 3] = [
-            (
-                [
-                    PriceData {
-                        price: 2_000,
-                        timestamp: 1_200,
-                    },
-                    PriceData {
-                        price: 2_000,
-                        timestamp: 2_000,
-                    },
-                ],
-                "consecutive gap 800 > 300",
-            ),
-            (
-                [
-                    PriceData {
-                        price: 2_000,
-                        timestamp: 1_100,
-                    },
-                    PriceData {
-                        price: 2_000,
-                        timestamp: 1_200,
-                    },
-                ],
-                "tail gap 800 > 300",
-            ),
-            (
-                [
-                    PriceData {
-                        price: 2_000,
-                        timestamp: 1_900,
-                    },
-                    PriceData {
-                        price: 2_000,
-                        timestamp: 2_000,
-                    },
-                ],
-                "first gap 900 > 300",
-            ),
-        ];
-        for (records, note) in cases {
-            let (f, spec) = twap_fixture(|env, reflector, _a, _b| {
-                twap_price_spec(env, reflector, 1_000, PriceDirection::Above, 1_000, 2, 300)
-            });
-            Sep40MockClient::new(&f.env, &f.reflector_id).set_config(&14, &100);
-            feed_history(&f, records);
-            arm_twap(&f, &spec);
-            f.env.ledger().set_timestamp(2_000);
-            assert_eq!(
-                f.resolver.try_resolve_twap(&f.market_id),
-                Err(Ok(Error::StalePrice)),
-                "{note}"
-            );
-        }
-    }
-
-    #[test]
-    fn twap_weighting_exact_known_value() {
-        // Hand-computed 4-sample case (issue #27 step 4): samples at
-        // 1750/1850/1900/2000 on the 50 s grid, weights 100/50/100/1
-        // (last weight = close_time - last_ts + 1), sum 45_400 / 251 ->
-        // floored 180, and 180 AtOrAbove 180 is Yes (equality boundary of
-        // the floored average).
-        let (f, spec) = twap_fixture(|env, reflector, _a, _b| {
-            twap_price_spec(
-                env,
-                reflector,
-                180,
-                PriceDirection::AtOrAbove,
-                1_000,
-                4,
-                900,
-            )
-        });
-        Sep40MockClient::new(&f.env, &f.reflector_id).set_config(&14, &50);
-        feed_history(
-            &f,
-            [
-                PriceData {
-                    price: 100,
-                    timestamp: 1_750,
-                },
-                PriceData {
-                    price: 300,
-                    timestamp: 1_850,
-                },
-                PriceData {
-                    price: 200,
-                    timestamp: 1_900,
-                },
-                PriceData {
-                    price: 400,
-                    timestamp: 2_000,
-                },
-            ],
-        );
-        arm_twap(&f, &spec);
-        f.env.ledger().set_timestamp(2_000);
-        use soroban_sdk::TryFromVal;
-        assert_eq!(f.resolver.resolve_twap(&f.market_id), Outcome::Yes);
-        let fields = twap_event_fields(&f, 0);
-        assert_eq!(
-            i128::try_from_val(&f.env, &fields.get(Symbol::new(&f.env, "twap")).unwrap()).unwrap(),
-            180
-        );
-    }
-
-    #[test]
-    fn twap_overflow_returns_invalid_price() {
-        // i128::MAX samples cannot be summed even with dt = 1: the checked
-        // accumulate gives InvalidPrice and the market stays unresolved.
-        let (f, spec) = twap_fixture(|env, reflector, _a, _b| {
-            twap_price_spec(env, reflector, 1_000, PriceDirection::Above, 30, 2, 30)
-        });
-        Sep40MockClient::new(&f.env, &f.reflector_id).set_config(&14, &1);
-        feed_history(
-            &f,
-            [
-                PriceData {
-                    price: i128::MAX,
-                    timestamp: 1_999,
-                },
-                PriceData {
-                    price: i128::MAX,
-                    timestamp: 2_000,
-                },
-            ],
-        );
-        arm_twap(&f, &spec);
-        f.env.ledger().set_timestamp(2_000);
-        assert_eq!(
-            f.resolver.try_resolve_twap(&f.market_id),
-            Err(Ok(Error::InvalidPrice))
-        );
-        assert_eq!(
-            f.resolver.state(&f.market_id),
-            ResolutionState::Unconfigured
-        );
-    }
-
-    #[test]
-    fn twap_rejects_nonpositive_sample() {
-        // Same rule as #26 for single prints: a zeroed or negative record in
-        // the window poisons the average outright.
-        for price in [0_i128, -1, -2_500] {
-            let (f, spec) = twap_fixture(|env, reflector, _a, _b| {
-                twap_price_spec(env, reflector, 1_000, PriceDirection::Above, 1_000, 2, 900)
-            });
-            Sep40MockClient::new(&f.env, &f.reflector_id).set_config(&14, &100);
-            feed_history(
-                &f,
-                [
-                    PriceData {
-                        price,
-                        timestamp: 2_000,
-                    },
-                    PriceData {
-                        price: 2_000,
-                        timestamp: 1_900,
-                    },
-                ],
-            );
-            arm_twap(&f, &spec);
-            f.env.ledger().set_timestamp(2_000);
-            assert_eq!(
-                f.resolver.try_resolve_twap(&f.market_id),
-                Err(Ok(Error::InvalidPrice)),
-                "price {price}"
-            );
-        }
-    }
-
-    #[test]
-    fn register_twap_spec_infeasible_window_rejected() {
-        // Every registration-time rejection is InvalidConfig (issue #27
-        // step 2): static field rules, an over-wide slot count against
-        // MAX_TWAP_SAMPLES, an unreachable min_samples target, and a
-        // zero-period feed.
-        let cases: [(u32, fn(&Env, &Address) -> TwapConfig, &str); 7] = [
-            (
-                1_000,
-                |env, r| twap_price_spec(env, r, 1_000, PriceDirection::Above, 33_001, 2, 1_000),
-                "window/resolution 33 > MAX_TWAP_SAMPLES",
-            ),
-            (
-                100,
-                |env, r| twap_price_spec(env, r, 1_000, PriceDirection::Above, 500, 6, 500),
-                "min_samples 6 > 5 grid slots",
-            ),
-            (
-                100,
-                |env, r| twap_price_spec(env, r, 1_000, PriceDirection::Above, 1_000, 1, 900),
-                "min_samples below 2",
-            ),
-            (
-                100,
-                |env, r| twap_price_spec(env, r, 1_000, PriceDirection::Above, 1_000, 2, 0),
-                "max_gap 0",
-            ),
-            (
-                100,
-                |env, r| twap_price_spec(env, r, 1_000, PriceDirection::Above, 1_000, 2, 1_001),
-                "max_gap > window",
-            ),
-            (
-                100,
-                |env, r| twap_price_spec(env, r, -1, PriceDirection::Above, 1_000, 2, 900),
-                "negative threshold",
-            ),
-            (
-                100,
-                |env, r| twap_price_spec(env, r, 1_000, PriceDirection::Above, 0, 2, 1),
-                "zero window",
-            ),
-        ];
-        for (resolution, make, note) in cases {
-            let (f, spec) = twap_fixture(|env, reflector, _a, _b| make(env, reflector));
-            Sep40MockClient::new(&f.env, &f.reflector_id).set_config(&14, &resolution);
-            assert_eq!(
-                f.resolver.try_register_twap_spec(&f.market_id, &spec),
-                Err(Ok(Error::InvalidConfig)),
-                "{note}"
-            );
-        }
-
-        // A feed with resolution() of 0 divides by zero at resolve time;
-        // registration rejects it too.
-        let (f, spec) = twap_fixture(twap_standard_spec);
-        Sep40MockClient::new(&f.env, &f.reflector_id).set_config(&14, &0);
-        assert_eq!(
-            f.resolver.try_register_twap_spec(&f.market_id, &spec),
-            Err(Ok(Error::InvalidConfig))
-        );
-
-        // An unreachable reflector at registration is PriceUnavailable:
-        // feasibility needs the live grid period, so reveal fails cleanly
-        // instead of committing an unverifiable rule.
-        let (f, spec) = twap_fixture(twap_standard_spec);
-        Sep40MockClient::new(&f.env, &f.reflector_id).set_config(&14, &100);
-        Sep40MockClient::new(&f.env, &f.reflector_id).set_panic(&true);
-        assert_eq!(
-            f.resolver.try_register_twap_spec(&f.market_id, &spec),
-            Err(Ok(Error::PriceUnavailable))
-        );
-    }
-
-    #[test]
-    fn cannot_register_twap_when_price_spec_exists() {
-        // assert_unconfigured sees the third key both ways: a legacy price
-        // market cannot reveal a TWAP rule, and a TWAP market cannot reveal
-        // legacy or scaled rules (the double-registration hole #26 closed
-        // for PriceScaled, extended to PriceTwap).
-        let f = fixture(|env, reflector, _a, _b| ResolutionSpec::Price(price_spec(env, reflector)));
-        let ResolutionSpec::Price(spec) = f.spec.clone() else {
-            unreachable!()
-        };
-        f.resolver.register_price_spec(&f.market_id, &spec);
-        let twap = twap_standard_spec(&f.env, &f.reflector_id);
-        assert_eq!(
-            f.resolver.try_register_twap_spec(&f.market_id, &twap),
-            Err(Ok(Error::MarketAlreadyConfigured))
-        );
-
-        let (g, spec) = twap_fixture(twap_standard_spec);
-        Sep40MockClient::new(&g.env, &g.reflector_id).set_config(&14, &100);
-        g.resolver.register_twap_spec(&g.market_id, &spec);
-        let legacy = price_spec(&g.env, &g.reflector_id);
-        assert_eq!(
-            g.resolver.try_register_price_spec(&g.market_id, &legacy),
-            Err(Ok(Error::MarketAlreadyConfigured))
-        );
-        let scaled = scaled_price_spec(&g.env, &g.reflector_id, 20, 2, PriceDirection::Above, 10);
-        assert_eq!(
-            g.resolver
-                .try_register_scaled_price_spec(&g.market_id, &scaled),
-            Err(Ok(Error::MarketAlreadyConfigured))
-        );
-        // TWAP markets are WrongMode for the raw-price snapshot and preview
-        // helpers, which pin a single record.
-        g.env.ledger().set_timestamp(2_000);
-        assert_eq!(
-            g.resolver
-                .try_snapshot_price(&g.market_id, &Address::generate(&g.env)),
-            Err(Ok(Error::WrongMode))
-        );
-        assert_eq!(
-            g.resolver.try_preview_price(&g.market_id),
-            Err(Ok(Error::WrongMode))
-        );
-        // And resolve_twap is WrongMode on a legacy price market.
-        assert_eq!(
-            f.resolver.try_resolve_twap(&f.market_id),
-            Err(Ok(Error::WrongMode))
-        );
-    }
-
-    #[test]
-    fn resolve_twap_lifecycle() {
-        let (f, spec) = twap_fixture(|env, reflector, _a, _b| {
-            twap_price_spec(env, reflector, 1_000, PriceDirection::Above, 1_000, 2, 900)
-        });
-        Sep40MockClient::new(&f.env, &f.reflector_id).set_config(&14, &100);
-        feed_history(
-            &f,
-            [
-                PriceData {
-                    price: 2_000,
-                    timestamp: 1_900,
-                },
-                PriceData {
-                    price: 2_000,
-                    timestamp: 2_000,
-                },
-            ],
-        );
-        arm_twap(&f, &spec);
-        // Before close: MarketNotClosed.
-        assert_eq!(
-            f.resolver.try_resolve_twap(&f.market_id),
             Err(Ok(Error::MarketNotClosed))
         );
         f.env.ledger().set_timestamp(2_000);
-        assert_eq!(f.resolver.resolve_twap(&f.market_id), Outcome::Yes);
+        assert_eq!(f.resolver.resolve_price(&f.market_id), Outcome::Yes);
         assert_eq!(f.resolver.state(&f.market_id), ResolutionState::Finalized);
+        assert_eq!(market_status(&f), MarketStatus::Resolved(Outcome::Yes));
         assert_eq!(
-            f.market_core.get_market(&f.market_id).status,
-            MarketStatus::Resolved(Outcome::Yes)
-        );
-        // Terminal after finalize.
-        assert_eq!(
-            f.resolver.try_resolve_twap(&f.market_id),
+            f.resolver.try_resolve_price(&f.market_id),
             Err(Ok(Error::AlreadyFinalized))
         );
     }
 
+    /// resolver_cancel.cfg (NoStrandedQuorum): RegisterSigners, Tick,
+    /// Attest(s1,Yes), Attest(s2,Yes), Cancel. Both signers already backed
+    /// Yes, so the Yes quorum can never re-propose and `finalize_signers`
+    /// reports NoProposal although quorum exists. The cancelled proposal is
+    /// never finalized; the market stays open until a guardian void
+    /// (SignersStalled) or expiry.
     #[test]
-    fn resolve_price_dispatches_twap_markets() {
-        // Parity with the #26 scaled dispatch: a revealed TWAP market also
-        // resolves through `resolve_price`, so callers need no mode probing.
-        let (f, spec) = twap_fixture(|env, reflector, _a, _b| {
-            twap_price_spec(env, reflector, 1_000, PriceDirection::Above, 1_000, 2, 900)
-        });
-        Sep40MockClient::new(&f.env, &f.reflector_id).set_config(&14, &100);
-        feed_history(
-            &f,
-            [
-                PriceData {
-                    price: 2_000,
-                    timestamp: 1_900,
-                },
-                PriceData {
-                    price: 2_000,
-                    timestamp: 2_000,
-                },
-            ],
-        );
-        arm_twap(&f, &spec);
+    fn model_trace_cancel_strands_quorum_until_stalled_void() {
+        let f = signer_fixture();
         f.env.ledger().set_timestamp(2_000);
-        assert_eq!(f.resolver.resolve_price(&f.market_id), Outcome::Yes);
+        attest_both(&f, AttestedOutcome::Yes);
+        f.resolver
+            .cancel_proposal(&f.market_id, &GuardianReason::DisputeUpheld);
+        assert_eq!(stored_proposal(&f), None);
+        assert_eq!(
+            f.resolver.state(&f.market_id),
+            ResolutionState::SignersPending
+        );
+
+        // Stranded: quorum for Yes, yet nothing can re-propose it.
+        f.env.ledger().set_timestamp(2_500);
+        assert_eq!(
+            f.resolver.try_finalize_signers(&f.market_id),
+            Err(Ok(Error::NoProposal))
+        );
+        assert_eq!(
+            f.resolver
+                .try_attest(&f.market_id, &f.signer_a, &AttestedOutcome::Yes),
+            Err(Ok(Error::AlreadyAttested))
+        );
+        assert_eq!(market_status(&f), MarketStatus::Open);
+
+        // The recourse is the guardian's SignersStalled void, after the grace.
+        assert_eq!(
+            f.resolver
+                .try_guardian_void_market(&f.market_id, &GuardianReason::SignersStalled),
+            Err(Ok(Error::GuardianNotAllowed))
+        );
+        f.env.ledger().set_timestamp(2_000 + SIGNER_GRACE_SECS);
+        f.resolver
+            .guardian_void_market(&f.market_id, &GuardianReason::SignersStalled);
+        assert_eq!(market_status(&f), MarketStatus::Void);
         assert_eq!(f.resolver.state(&f.market_id), ResolutionState::Finalized);
     }
 
+    /// resolver_invalid.cfg (NoInvalidDisplacement), intended behaviour:
+    /// an Invalid quorum displaces a pending Yes proposal and restarts the
+    /// dispute window.
     #[test]
-    fn twap_emits_resolution_events_with_avg_and_window() {
-        use soroban_sdk::TryFromVal;
-        let (f, spec) = twap_fixture(|env, reflector, _a, _b| {
-            twap_price_spec(env, reflector, 1_000, PriceDirection::Above, 1_000, 3, 600)
-        });
-        Sep40MockClient::new(&f.env, &f.reflector_id).set_config(&14, &100);
-        feed_history(
-            &f,
-            [
-                PriceData {
-                    price: 2_000,
-                    timestamp: 1_200,
-                },
-                PriceData {
-                    price: 2_000,
-                    timestamp: 1_800,
-                },
-                PriceData {
-                    price: 100,
-                    timestamp: 2_000,
-                },
-            ],
-        );
-        arm_twap(&f, &spec);
+    fn model_trace_invalid_quorum_displaces_yes_and_restarts_window() {
+        let f = signer_fixture();
         f.env.ledger().set_timestamp(2_000);
-        assert_eq!(f.resolver.resolve_twap(&f.market_id), Outcome::Yes);
+        attest_both(&f, AttestedOutcome::Yes);
+        assert_eq!(stored_proposal(&f).unwrap().outcome, AttestedOutcome::Yes);
 
-        // Newest event: TwapResolution with the full averaging report.
-        let fields = twap_event_fields(&f, 0);
-        let get = |name: &str| fields.get(Symbol::new(&f.env, name)).unwrap();
-        assert_eq!(i128::try_from_val(&f.env, &get("twap")).unwrap(), 1_997);
-        assert_eq!(u32::try_from_val(&f.env, &get("samples")).unwrap(), 3);
-        assert_eq!(u64::try_from_val(&f.env, &get("first_ts")).unwrap(), 1_200);
-        assert_eq!(u64::try_from_val(&f.env, &get("last_ts")).unwrap(), 2_000);
+        f.env.ledger().set_timestamp(2_050);
+        attest_both(&f, AttestedOutcome::Invalid);
+        let p = stored_proposal(&f).unwrap();
         assert_eq!(
-            Outcome::try_from_val(&f.env, &get("outcome")).unwrap(),
-            Outcome::Yes
+            (p.outcome, p.proposed_at),
+            (AttestedOutcome::Invalid, 2_050)
         );
-        // The unchanged PriceResolutionV2 compatibility event carries the
-        // averaged price stamped at the newest sample.
-        let compat = twap_event_fields(&f, 1);
+
+        // The Yes window would have closed at 2_100; the restarted one has not.
+        f.env.ledger().set_timestamp(2_100);
         assert_eq!(
-            i128::try_from_val(&f.env, &compat.get(Symbol::new(&f.env, "price")).unwrap()).unwrap(),
-            1_997
+            f.resolver.try_finalize_signers(&f.market_id),
+            Err(Ok(Error::DisputeWindowOpen))
         );
+        f.env.ledger().set_timestamp(2_150);
         assert_eq!(
-            u64::try_from_val(
-                &f.env,
-                &compat.get(Symbol::new(&f.env, "price_timestamp")).unwrap()
-            )
-            .unwrap(),
-            2_000
+            f.resolver.finalize_signers(&f.market_id),
+            AttestedOutcome::Invalid
         );
-        assert!(!bool::try_from_val(
-            &f.env,
-            &compat.get(Symbol::new(&f.env, "from_snapshot")).unwrap()
-        )
-        .unwrap());
+        assert_eq!(market_status(&f), MarketStatus::Void);
     }
 
+    /// resolver_both_outcomes.cfg (ProposalTimestampStable) refutes the
+    /// suspected griefing: signers attesting the other outcome after a
+    /// proposal exists neither move it nor reset `proposed_at`.
     #[test]
-    fn twap_read_cap_bounds_window_of_missing_records() {
-        // The loop caps *reads*, not found samples: registration is feasible
-        // on the 1000 s grid (30 slots), the feed then narrows to 100 s
-        // (300 slots) and answers nothing. Without the cap the walk would
-        // inspect every slot of the window; with it, resolution stops after
-        // MAX_TWAP_SAMPLES calls and fails min_samples with StalePrice.
-        let (f, spec) = twap_fixture_at(60_000, |env, reflector, _a, _b| {
-            twap_price_spec(
-                env,
-                reflector,
-                1_000,
-                PriceDirection::Above,
-                30_000,
-                2,
-                30_000,
-            )
-        });
-        Sep40MockClient::new(&f.env, &f.reflector_id).set_config(&14, &1_000);
-        arm_twap(&f, &spec);
-        Sep40MockClient::new(&f.env, &f.reflector_id).set_config(&14, &100);
-        f.env.ledger().set_timestamp(60_000);
-        assert_eq!(
-            f.resolver.try_resolve_twap(&f.market_id),
-            Err(Ok(Error::StalePrice))
-        );
-        assert!(MAX_TWAP_SAMPLES < 300);
-    }
-
-    #[test]
-    fn twap_ignores_duplicate_records_from_nearest_earlier_feed() {
-        // Issue #27 edge: a feed answering `price(asset, ts)` with the
-        // newest record at or before ts returns the 1800 record for both
-        // the 1900 and the 1800 queries. Each timestamp must be counted
-        // once: weights 200 (for 1800) and 1 (for 2000), giving
-        // (500*200 + 1000*1) / 201 = 502, not a three-sample average.
-        let (f, spec) = twap_fixture(|env, reflector, _a, _b| {
-            twap_price_spec(
-                env,
-                reflector,
-                180,
-                PriceDirection::AtOrAbove,
-                1_000,
-                2,
-                900,
-            )
-        });
-        let feed = Sep40MockClient::new(&f.env, &f.reflector_id);
-        feed.set_config(&14, &100);
-        feed.set_nearest(&true);
-        feed_history(
-            &f,
-            [
-                PriceData {
-                    price: 500,
-                    timestamp: 1_800,
-                },
-                PriceData {
-                    price: 1_000,
-                    timestamp: 2_000,
-                },
-            ],
-        );
-        arm_twap(&f, &spec);
+    fn model_trace_other_outcome_quorum_does_not_reset_window() {
+        let f = signer_fixture();
         f.env.ledger().set_timestamp(2_000);
-        use soroban_sdk::TryFromVal;
-        assert_eq!(f.resolver.resolve_twap(&f.market_id), Outcome::Yes);
-        let fields = twap_event_fields(&f, 0);
+        attest_both(&f, AttestedOutcome::Yes);
+        f.env.ledger().set_timestamp(2_050);
+        attest_both(&f, AttestedOutcome::No);
+        let p = stored_proposal(&f).unwrap();
+        assert_eq!((p.outcome, p.proposed_at), (AttestedOutcome::Yes, 2_000));
+        f.env.ledger().set_timestamp(2_100);
         assert_eq!(
-            i128::try_from_val(&f.env, &fields.get(Symbol::new(&f.env, "twap")).unwrap()).unwrap(),
-            502
+            f.resolver.finalize_signers(&f.market_id),
+            AttestedOutcome::Yes
         );
-        assert_eq!(
-            u32::try_from_val(&f.env, &fields.get(Symbol::new(&f.env, "samples")).unwrap())
-                .unwrap(),
-            2
-        );
+        assert_eq!(market_status(&f), MarketStatus::Resolved(Outcome::Yes));
     }
 
+    /// resolver.cfg (NoResolveBeforeClose): the guardian cannot void before
+    /// close_time for any reason, and no attestation can exist yet.
     #[test]
-    fn expire_resolves_twap_market_when_feed_is_valid() {
-        // Expiry prefers resolution over voiding, as for the other price
-        // shapes: at the deadline with a live feed the market settles on
-        // its TWAP instead of expiring.
-        let (f, spec) = twap_fixture(|env, reflector, _a, _b| {
-            twap_price_spec(env, reflector, 1_000, PriceDirection::Above, 1_000, 2, 900)
-        });
-        Sep40MockClient::new(&f.env, &f.reflector_id).set_config(&14, &100);
-        feed_history(
-            &f,
-            [
-                PriceData {
-                    price: 2_000,
-                    timestamp: 1_900,
-                },
-                PriceData {
-                    price: 2_000,
-                    timestamp: 2_000,
-                },
-            ],
-        );
-        arm_twap(&f, &spec);
-        f.env.ledger().set_timestamp(DEADLINE);
-        f.resolver.expire_market(&f.market_id);
+    fn model_trace_no_void_or_attestation_before_close() {
+        let f = signer_fixture();
+        f.env.ledger().set_timestamp(1_500);
+        for reason in [
+            GuardianReason::UnrevealedSpec,
+            GuardianReason::OracleUnavailable,
+            GuardianReason::SignersStalled,
+            GuardianReason::DisputeUpheld,
+        ] {
+            assert_eq!(
+                f.resolver.try_guardian_void_market(&f.market_id, &reason),
+                Err(Ok(Error::GuardianNotAllowed))
+            );
+        }
         assert_eq!(
-            f.market_core.get_market(&f.market_id).status,
-            MarketStatus::Resolved(Outcome::Yes)
+            f.resolver
+                .try_attest(&f.market_id, &f.signer_a, &AttestedOutcome::Invalid),
+            Err(Ok(Error::MarketNotClosed))
         );
-        assert_eq!(f.resolver.state(&f.market_id), ResolutionState::Finalized);
+        assert_eq!(market_status(&f), MarketStatus::Open);
     }
 
+    /// resolver.cfg: a guardian void is terminal for the resolver. Later
+    /// attestations fail on `AlreadyFinalized`, and `finalize_signers` on a
+    /// proposal that predates the void fails inside market-core.
     #[test]
-    fn expire_voids_twap_market_whose_feed_traps() {
-        // A dead feed must not lock TWAP collateral behind guardian-void
-        // forever: the settle attempt fails feed-unusable and the uniform
-        // ExpiryMode::Price void path applies.
-        let (f, spec) = twap_fixture(|env, reflector, _a, _b| {
-            twap_price_spec(env, reflector, 1_000, PriceDirection::Above, 1_000, 2, 900)
-        });
-        Sep40MockClient::new(&f.env, &f.reflector_id).set_config(&14, &100);
-        arm_twap(&f, &spec);
-        Sep40MockClient::new(&f.env, &f.reflector_id).set_panic(&true);
-        f.env.ledger().set_timestamp(DEADLINE);
-        f.resolver.expire_market(&f.market_id);
-        assert_expired_event(&f, ExpiryMode::Price);
+    fn model_trace_guardian_void_blocks_later_attest_and_finalize() {
+        let f = signer_fixture();
+        f.env.ledger().set_timestamp(2_000);
+        attest_both(&f, AttestedOutcome::Yes);
+        f.resolver
+            .guardian_void_market(&f.market_id, &GuardianReason::DisputeUpheld);
+        assert_eq!(market_status(&f), MarketStatus::Void);
+        assert_eq!(
+            f.resolver
+                .try_attest(&f.market_id, &f.signer_a, &AttestedOutcome::No),
+            Err(Ok(Error::AlreadyFinalized))
+        );
+        f.env.ledger().set_timestamp(2_100);
+        assert!(f.resolver.try_finalize_signers(&f.market_id).is_err());
+        assert_eq!(market_status(&f), MarketStatus::Void);
     }
+
+    /// resolver.cfg (Expire): expiry refuses while a quorum-backed proposal
+    /// exists and voids once it is cancelled.
+    #[test]
+    fn model_trace_expire_blocked_by_valid_proposal() {
+        let f = signer_fixture();
+        f.env.ledger().set_timestamp(2_000);
+        attest_both(&f, AttestedOutcome::Yes);
+        f.env.ledger().set_timestamp(DEADLINE);
+        assert_eq!(
+            f.resolver.try_expire_market(&f.market_id),
+            Err(Ok(Error::ResolutionAvailable))
+        );
+        assert_eq!(market_status(&f), MarketStatus::Open);
+    }
+
+    /// Stand-in for "some other resolver": all market-core's wiring
+    /// handshake needs from the peer is `market_core()`.
+    #[contract]
+    struct WiringPeer;
+
+    #[contractimpl]
+    impl WiringPeer {
+        pub fn __constructor(env: Env, core: Address) {
+            env.storage().instance().set(&0u32, &core);
+        }
+
+        pub fn market_core(env: Env) -> Address {
+            env.storage().instance().get(&0u32).unwrap()
+        }
+    }
+
+    /// resolver_bypass.cfg (ResolvedOutcomeHadThreshold fails by design):
+    /// the market-core admin hands the resolver role to another contract,
+    /// which resolves without this resolver's signers ever reaching quorum.
+    /// A documented trust assumption (ADR 0001, 0006, 0007), not a contract
+    /// bug in the resolver.
+    #[test]
+    fn model_trace_admin_bypass_resolves_without_threshold() {
+        let f = signer_fixture();
+        let peer = f.env.register(WiringPeer, (f.market_core.address.clone(),));
+        f.market_core.propose_resolver(&peer);
+        f.market_core.accept_resolver();
+
+        f.env.ledger().set_timestamp(2_000);
+        f.market_core.resolve(&f.market_id, &Outcome::No);
+
+        assert_eq!(market_status(&f), MarketStatus::Resolved(Outcome::No));
+        // This resolver saw none of it: no votes, still "pending", and it
+        // can no longer move the market (market-core rejects it as resolver).
+        assert_eq!(
+            f.resolver.state(&f.market_id),
+            ResolutionState::SignersPending
+        );
+        f.env.as_contract(&f.resolver_id, || {
+            assert_eq!(
+                Resolver::attestation_count(&f.env, f.market_id, AttestedOutcome::No),
+                0
+            );
+        });
+        attest_both(&f, AttestedOutcome::Yes);
+        f.env.ledger().set_timestamp(2_100);
+        assert!(f.resolver.try_finalize_signers(&f.market_id).is_err());
+        assert_eq!(market_status(&f), MarketStatus::Resolved(Outcome::No));
+    }
+
+    /// Everything observable about market-core through a resolver scenario,
+    /// as text: trading maths, final status, payouts, balances.
+    fn market_core_trace() -> std::vec::Vec<std::string::String> {
+        use std::format;
+        let f = signer_fixture();
+        let id = f.market_id;
+        let creator = f.market_core.get_market(&id).creator;
+        let one = 10_000_000_i128;
+        let mut t = std::vec::Vec::new();
+        t.push(format!(
+            "price {}",
+            f.market_core.get_price(&id, &Outcome::Yes)
+        ));
+        t.push(format!(
+            "quote {}",
+            f.market_core.quote_buy(&id, &Outcome::Yes, &(10 * one))
+        ));
+        t.push(format!(
+            "buy {}",
+            f.market_core
+                .buy(&creator, &id, &Outcome::Yes, &(10 * one), &0)
+        ));
+        t.push(format!(
+            "price {}",
+            f.market_core.get_price(&id, &Outcome::Yes)
+        ));
+        t.push(format!(
+            "sell {}",
+            f.market_core
+                .sell(&creator, &id, &Outcome::Yes, &(3 * one), &(100 * one))
+        ));
+        t.push(format!(
+            "pos {:?}",
+            f.market_core.get_position(&id, &creator)
+        ));
+        f.env.ledger().set_timestamp(2_000);
+        attest_both(&f, AttestedOutcome::No);
+        t.push(format!("early {:?}", f.resolver.try_finalize_signers(&id)));
+        f.env.ledger().set_timestamp(2_100);
+        t.push(format!("finalize {:?}", f.resolver.finalize_signers(&id)));
+        t.push(format!("status {:?}", f.market_core.get_market(&id).status));
+        t.push(format!("again {:?}", f.resolver.try_finalize_signers(&id)));
+        t.push(format!("redeem {}", f.market_core.redeem(&creator, &id)));
+        t.push(format!("claim {}", f.market_core.claim_pool_remainder(&id)));
+        t.push(format!("sweep {}", f.market_core.sweep_fees(&id)));
+        t
+    }
+
+    /// The native registration (which coverage can see) must be a faithful
+    /// stand-in for the wasm that ships, and for the vendored copy drifting
+    /// from the source: identical observable behaviour, step by step.
+    #[test]
+    fn native_and_wasm_market_core_agree() {
+        let wasm = with_market_core(McImpl::Wasm, market_core_trace);
+        let native = with_market_core(McImpl::Native, market_core_trace);
+        assert_eq!(wasm, native);
+        assert!(wasm.len() > 10, "{wasm:?}");
+    }
+
+    both_modes!(
+        price_mode_resolves_from_historical_reflector_price,
+        signer_mode_requires_threshold_and_waits_for_dispute_window,
+        invalid_attestations_void_market_after_dispute_window,
+        guardian_cancel_of_invalid_proposal_then_yes_finalizes,
+        expire_voids_signer_market_once_proposal_is_cancelled,
+        attest_rejected_after_expiry,
+        guardian_void_rejected_after_expiry,
+        cancel_proposal_blocked_while_disputed,
+        guardian_void_while_disputed_refunds_bond,
+        model_trace_signers_happy_path_yes,
+        model_trace_price_happy_path_yes,
+        model_trace_cancel_strands_quorum_until_stalled_void,
+        model_trace_invalid_quorum_displaces_yes_and_restarts_window,
+        model_trace_other_outcome_quorum_does_not_reset_window,
+        model_trace_no_void_or_attestation_before_close,
+        model_trace_guardian_void_blocks_later_attest_and_finalize,
+        model_trace_expire_blocked_by_valid_proposal,
+        model_trace_admin_bypass_resolves_without_threshold,
+    );
 }
 
 #[cfg(test)]
@@ -7391,6 +6484,19 @@ mod golden {
         for (spec, expected) in vectors {
             assert_eq!(hex_of(&env, &spec), expected);
         }
+    }
+
+    /// `Vec` order is part of the XDR, so the same signer set in another
+    /// order is a different commitment. Off-chain tooling (the market-maker's
+    /// `agents/core/spec.ts`, `scripts/seed-market.sh`) must hash and reveal
+    /// one canonical order: lexicographic strkey.
+    #[test]
+    fn signer_spec_hash_depends_on_signer_order() {
+        let env = Env::default();
+        let declared = hex_of(&env, &signers(&env, &[G1, G2, G3], 2, 3_600));
+        let canonical = hex_of(&env, &signers(&env, &[G3, G1, G2], 2, 3_600));
+        assert_eq!(declared, "4373448f97b0dd998a70efd9a1bfd3b3b8639bebaf682d9fc083c11f248a99ee");
+        assert_ne!(declared, canonical);
     }
 
     #[test]
