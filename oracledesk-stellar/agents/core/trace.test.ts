@@ -1,6 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildTrace, canonicalize, commitmentFor, hashTrace, newSalt } from "./trace.js";
+import {
+  buildTrace,
+  canonicalize,
+  commitmentFor,
+  fromTraceAction,
+  hashTrace,
+  newSalt,
+  NO_MARKET,
+  toTraceAction,
+  type TraceActionType,
+} from "./trace.js";
 
 test("canonicalize sorts object keys regardless of insertion order", () => {
   const a = canonicalize({ b: 1, a: 2 });
@@ -102,4 +112,39 @@ test("newSalt returns 32 random bytes as hex", () => {
   const b = newSalt();
   assert.match(a, /^[0-9a-f]{64}$/);
   assert.notEqual(a, b);
+});
+
+// ─── TraceAction mapping (#55) ───────────────────────────────────────────────
+
+test("toTraceAction and fromTraceAction cover all canonical variants", () => {
+  const canonical: Array<{ str: string; obj: TraceActionType }> = [
+    { str: "create_market", obj: { tag: "CreateMarket" } },
+    { str: "propose_market", obj: { tag: "ProposeMarket" } },
+    { str: "buy", obj: { tag: "Buy" } },
+    { str: "sell", obj: { tag: "Sell" } },
+    { str: "skip", obj: { tag: "Skip" } },
+    { str: "redeem", obj: { tag: "Redeem" } },
+    { str: "claim_remainder", obj: { tag: "ClaimRemainder" } },
+    { str: "resolve", obj: { tag: "Resolve" } },
+  ];
+
+  for (const { str, obj } of canonical) {
+    assert.deepEqual(toTraceAction(str), obj);
+    assert.equal(fromTraceAction(obj), str);
+  }
+});
+
+test("toTraceAction and fromTraceAction support Other variant", () => {
+  const custom = toTraceAction("other:custom_hook");
+  assert.deepEqual(custom, { tag: "Other", values: ["custom_hook"] });
+  assert.equal(fromTraceAction(custom), "other:custom_hook");
+
+  const bareCustom = toTraceAction("arbitrary_action");
+  assert.deepEqual(bareCustom, { tag: "Other", values: ["arbitrary_action"] });
+  assert.equal(fromTraceAction(bareCustom), "other:arbitrary_action");
+});
+
+test("NO_MARKET constant is u64::MAX", () => {
+  assert.equal(NO_MARKET, 18446744073709551615n);
+  assert.equal(NO_MARKET, (1n << 64n) - 1n);
 });
