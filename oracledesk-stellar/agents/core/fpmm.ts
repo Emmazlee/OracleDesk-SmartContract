@@ -31,7 +31,7 @@ export const MAX_PROB_BPS = 9_900n ; // 99%
 export const MAX_DECIMALS = 18;
 
 /** Maximum value of a signed 128-bit integer. */
-export const I18_MAX = (1n << 127n) - 1n;
+export const I128_MAX = (1n << 127n) - 1n;
 
 export class MathError extends Error {}
 
@@ -64,16 +64,16 @@ export function boundsForDecimals(decimals: number): Bounds {
 }
 
 function checkI128(value: bigint): bigint {
-  if (value > I18_MAX) throw new MathError("overflow");
+  if (value > I128_MAX) throw new MathError("overflow");
   return value;
 }
 
-function mulDivFloor(a: bigint, b: bigint, c: bigint): bigint {
+export function mulDivFloor(a: bigint, b: bigint, c: bigint): bigint {
   if (a < 0n || b < 0n || c <= 0n) throw new MathError("invalid input");
   return checkI128((a * b) / c);
 }
 
-function mulDivCeil(a: bigint, b: bigint, c: bigint): bigint {
+export function mulDivCeil(a: bigint, b: bigint, c: bigint): bigint {
   if (a < 0n || b < 0n || c <= 0n) throw new MathError("invalid input");
   const p = a * b;
   const q = p / c;
@@ -234,6 +234,60 @@ export function collateralOutForShares(
 ): bigint {
   const gross = grossForShares(rSold, rOther, sharesIn, feeBps);
   return mulDivFloor(gross, BPS - feeBps, BPS);
+}
+
+/** Search budget for collateralForShares; the bracket needs far fewer steps. */
+const COLLATERAL_SEARCH_STEPS = 256;
+
+/**
+ * Exact buy-side inverse of calcBuy (#108): the minimum `collateralIn` for
+ * which `calcBuy(rBought, rOther, collateralIn, feeBps).sharesOut` is at
+ * least `sharesTarget`.
+ *
+ * The constant-product solution for the net amount is
+ *   n = (sqrt(b^2 + 4·s·rOther) - b) / 2,  b = rBought + rOther - s,
+ * grossed up for the fee. calcBuy rounds the fee and the new reserve up, so
+ * that estimate can be off by a few units either way; a bracket around it
+ * is then binary-searched against calcBuy itself, which makes the result
+ * exact. sharesOut never decreases as collateralIn grows, so the search is
+ * valid. Mirrors model/fpmm_model.py::collateral_for_shares.
+ */
+export function collateralForShares(rBought: bigint, rOther: bigint, sharesTarget: bigint, feeBps: bigint): bigint {
+  if (sharesTarget <= 0n || rBought <= 0n || rOther <= 0n || feeBps < 0n || feeBps >= BPS) {
+    throw new MathError("invalid input");
+  }
+  const sharesFor = (c: bigint): bigint => {
+    if (c <= 0n) return 0n;
+    try {
+      return calcBuy(rBought, rOther, c, feeBps).sharesOut;
+    } catch (err) {
+      if (err instanceof MathError) return 0n; // too small to buy anything
+      throw err;
+    }
+  };
+  const b = rBought + rOther - sharesTarget;
+  const net = (isqrt(b * b + 4n * sharesTarget * rOther) - b) / 2n;
+  const estimate = mulDivCeil(net > 0n ? net : 1n, BPS, BPS - feeBps);
+
+  // hi: smallest probe known to reach the target; lo: largest known not to.
+  let hi = estimate;
+  let steps = 0;
+  while (sharesFor(hi) < sharesTarget) {
+    hi = hi * 2n + 1n;
+    if (++steps > COLLATERAL_SEARCH_STEPS) throw new MathError("target not reachable");
+  }
+  let lo = hi > 64n ? hi - 64n : 0n;
+  while (lo > 0n && sharesFor(lo) >= sharesTarget) {
+    lo /= 2n;
+    if (++steps > COLLATERAL_SEARCH_STEPS) throw new MathError("search did not converge");
+  }
+  while (hi - lo > 1n) {
+    const mid = (lo + hi) / 2n;
+    if (sharesFor(mid) >= sharesTarget) hi = mid;
+    else lo = mid;
+    if (++steps > COLLATERAL_SEARCH_STEPS) throw new MathError("search did not converge");
+  }
+  return hi;
 }
 
 /**

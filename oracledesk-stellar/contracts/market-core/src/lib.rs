@@ -1,6 +1,8 @@
 #![no_std]
 
 mod math;
+#[cfg(kani)]
+mod math_proofs;
 
 use math::{MathError, Settlement, BPS, MAX_SETS};
 use soroban_sdk::{
@@ -30,38 +32,11 @@ const ADMIN_PROPOSAL_TTL_SECS: u64 = 7 * 86_400;
 // ---------------------------------------------------------------------------
 // Types shared with the frontend/backend
 // ---------------------------------------------------------------------------
-// Generate TypeScript bindings straight from the compiled contract
-// (`stellar contract bindings typescript`) so enums like `Category` cannot
-// drift between the contract, the API and the UI.
-
-#[contracttype]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Outcome {
-    Yes,
-    No,
-}
-
-#[contracttype]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Category {
-    Crypto,
-    Macro,
-    Geopolitics,
-    Sports,
-    Culture,
-    Other,
-}
-
-#[contracttype]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MarketStatus {
-    /// Trading allowed until `close_time`, then waiting for the resolver.
-    Open,
-    /// Final. Winning shares redeem 1:1.
-    Resolved(Outcome),
-    /// Invalid market. Every share redeems at 0.5.
-    Void,
-}
+// The canonical definitions live in `oracledesk-types` and are re-exported
+// here so every consumer (contracts, generated bindings, off-chain tooling)
+// sees one Rust type. `#[contracttype]` still exports them into this
+// contract's spec, so generated TypeScript bindings are unchanged.
+pub use oracledesk_types::{Category, MarketStatus, Outcome};
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]

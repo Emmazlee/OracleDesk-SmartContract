@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
-# Idempotent testnet deploy for the OracleDesk contracts (market-core,
-# resolver, treasury, reasoning-registry, and optionally the timelock).
+# Idempotent deploy for the OracleDesk contracts (market-core, resolver,
+# treasury, reasoning-registry, and optionally the timelock).
 #
-# Safe to re-run: each step checks deployments/testnet.json first and skips
-# anything already recorded there. Delete an entry (or the whole file) to
-# force that piece to redeploy. Never touches mainnet — the network is
-# hardcoded to `testnet` below, not read from the environment.
+# NETWORK must be `testnet` (default) or `local` (the Stellar quickstart
+# container). Anything else — especially `mainnet` — is rejected before any
+# key or contract is touched. Each network gets its own record in
+# deployments/<network>.json, so local runs never clobber testnet.
+#
+# Safe to re-run: each step checks the network's record first and skips
+# anything already deployed. Delete an entry (or the whole file) to force
+# that piece to redeploy. The deterministic salts make a re-run idempotent.
 #
 # Requires: stellar CLI, jq. Builds the contracts first if their wasm
 # isn't already built (`make build` does this, or run `stellar contract
@@ -13,15 +17,21 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-NETWORK=testnet
-DEPLOYER_KEY=oracledesk-deployer
-AGENT_KEY=oracledesk-agent
+NETWORK=${NETWORK:-testnet}
+case "$NETWORK" in
+  testnet|local) ;;
+  *) echo "error: NETWORK must be testnet or local (never mainnet)" >&2; exit 1 ;;
+esac
+
+IDENTITY_PREFIX=${IDENTITY_PREFIX:-oracledesk}
+DEPLOYER_KEY=${DEPLOYER_KEY:-${IDENTITY_PREFIX}-deployer}
+AGENT_KEY=${AGENT_KEY:-${IDENTITY_PREFIX}-agent}
 # Least-privilege per-role agents registered in the treasury's agent
 # registry: the maker creates/seeds and settles, the trader trades and
 # settles. The constructor agent above keeps every role until removed.
-MAKER_KEY=oracledesk-maker
-TRADER_KEY=oracledesk-trader
-OUT=deployments/testnet.json
+MAKER_KEY=${MAKER_KEY:-${IDENTITY_PREFIX}-maker}
+TRADER_KEY=${TRADER_KEY:-${IDENTITY_PREFIX}-trader}
+OUT=${OUT:-deployments/$NETWORK.json}
 WASM_DIR=target/wasm32v1-none/release
 
 # Collateral decimals. market-core reads decimals() from the token at
@@ -50,7 +60,13 @@ DRAWDOWN_WINDOW_DAYS=${DRAWDOWN_WINDOW_DAYS:-7}
 # Market creation risk controls (Issue #47)
 MAX_SEED=${MAX_SEED:-$MAX_MARKET}
 MAX_MARKETS_PER_DAY=${MAX_MARKETS_PER_DAY:-20}
-MIN_CLOSE_HORIZON=${MIN_CLOSE_HORIZON:-60}
+# The local E2E harness uses 10-second markets; testnet keeps a 60s floor so
+# a market cannot close before the deploy transaction is observable.
+if [ "$NETWORK" = "local" ]; then
+  MIN_CLOSE_HORIZON=${MIN_CLOSE_HORIZON:-5}
+else
+  MIN_CLOSE_HORIZON=${MIN_CLOSE_HORIZON:-60}
+fi
 MAX_CLOSE_HORIZON=${MAX_CLOSE_HORIZON:-7776000} # 90 days
 ALLOWED_CATEGORIES=${ALLOWED_CATEGORIES:-63}     # 0x3F (Crypto, Forex, Equities, Commodities, Macro, Politics)
 # Timelock (seconds, >= 86400) on every loosening treasury change: raising a
@@ -76,6 +92,9 @@ RESOLVER_SALT=${RESOLVER_SALT:-6f7261636c656465736b2d7265736f6c7665722d7631}
 TREASURY_SALT=${TREASURY_SALT:-6f7261636c656465736b2d74726561737572792d7631}
 REGISTRY_SALT=${REGISTRY_SALT:-6f7261636c656465736b2d72656769737472792d7631}
 TIMELOCK_SALT=${TIMELOCK_SALT:-6f7261636c656465736b2d74696d656c6f636b2d7631}
+# Local-only Reflector-shaped oracle (contracts/test-oracle). Never deployed
+# on testnet, so nobody can commit a real market to a fake feed.
+TEST_ORACLE_SALT=${TEST_ORACLE_SALT:-6f7261636c656465736b2d746573742d6f7261636c652d7631}
 # #63: when 1 every contract's admin is the timelock, passed in the
 # constructor, so no single key can act instantly. It stays 0 by default
 # because it turns the rest of this script's admin setup into timelocked
@@ -163,7 +182,9 @@ ensure_identity() {
 }
 
 # --- wasm must already be built -------------------------------------------
-for f in market_core resolver reasoning_registry treasury timelock router; do
+EXTRA_WASM=""
+[ "$NETWORK" = "local" ] && EXTRA_WASM="test_oracle"
+for f in market_core resolver reasoning_registry treasury timelock router $EXTRA_WASM; do
   if [ ! -f "$WASM_DIR/$f.wasm" ]; then
     log "missing $WASM_DIR/$f.wasm — building all contracts first"
     stellar contract build
@@ -176,6 +197,7 @@ done
 # rebuilding them. See docs/adr/0002-cross-contract-calls.md.
 cp "$WASM_DIR/market_core.wasm" contracts/resolver/market_core.wasm
 cp "$WASM_DIR/market_core.wasm" contracts/treasury/market_core.wasm
+cp "$WASM_DIR/market_core.wasm" contracts/reasoning-registry/market_core.wasm
 cp "$WASM_DIR/reasoning_registry.wasm" contracts/resolver/reasoning_registry.wasm
 cp "$WASM_DIR/market_core.wasm" contracts/router/market_core.wasm
 cp "$WASM_DIR/resolver.wasm" contracts/router/resolver.wasm
@@ -471,6 +493,33 @@ if [ "$TREASURY_FUNDED" != "$FUND_AMOUNT" ]; then
   json_set --arg a "$FUND_AMOUNT" '.treasury_funded_amount = $a'
 else
   log "treasury already funded with $FUND_AMOUNT stroops"
+fi
+
+# --- local-only test oracle --------------------------------------------------
+# Price-mode resolution needs a Reflector-shaped feed. It exists only on the
+# quickstart network; the testnet path must keep using the real resolver
+# rules and never a fake oracle.
+if [ "$NETWORK" = "local" ]; then
+  TEST_ORACLE=$(json_get .contracts.test_oracle)
+  [ -n "$TEST_ORACLE" ] || TEST_ORACLE=$(predict_id "$TEST_ORACLE_SALT")
+  json_set --arg s "$TEST_ORACLE_SALT" '.salts.test_oracle = $s'
+  if [ "$(json_get .contracts.test_oracle)" = "" ]; then
+    log "deploying local test oracle at deterministic address $TEST_ORACLE"
+    DEPLOYED=$(stellar contract deploy \
+      --wasm "$WASM_DIR/test_oracle.wasm" \
+      --salt "$TEST_ORACLE_SALT" \
+      --source-account "$DEPLOYER_KEY" \
+      --network "$NETWORK" \
+      -- \
+      --admin "$ADMIN")
+    [ "$DEPLOYED" = "$TEST_ORACLE" ] || {
+      echo "error: test oracle landed at $DEPLOYED, expected $TEST_ORACLE" >&2
+      exit 1
+    }
+    json_set --arg id "$TEST_ORACLE" '.contracts.test_oracle = $id'
+  else
+    log "test oracle already deployed: $TEST_ORACLE"
+  fi
 fi
 
 json_set --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '.last_deployed_at = $ts'

@@ -105,6 +105,20 @@ emits `LpTransferred`. Both preserve the solvency invariant by
 construction; the position mapping is unchanged down to the "remove
 zero entries" rule.
 
+**Runtime enforcement.** The invariant is no longer just a test
+property. Every collateral movement in market-core goes through a
+checked transfer helper that measures the actual balance delta, and a
+global locked-collateral counter is updated on every inflow and outflow.
+Every market shares one token balance held at the market-core address, so
+the contract no longer trusts that every `token.transfer` moved exactly
+the requested amount.
+
+#### Runtime solvency accounting
+
+**Economics.** LP worst-case loss, the rounding argument and the no-arbitrage
+theorem for this exact integer math are in [fpmm-economics.md](fpmm-economics.md)
+(executable checks: `model/fpmm_bounds.py`).
+
 **Resolution commitment**: `resolution_hash` is fixed at `create_market`
 time — see [ADR 0001](adr/0001-resolution-commitment.md) for why.
 
@@ -115,7 +129,17 @@ holder, `claim_pool_remainder` for the creator/LP, `sweep_fees`
 ownership can change hands at any point via `transfer_position` /
 `transfer_lp`.
 
-### resolver
+The contract maintains a global counter and a per-market figure:
+
+-  `DataKey::TotalLocked` (instance, `i128`, initialised to `0` in the
+    constructor): the sum over all markets of collateral the contract
+    still owes (unredeemed claims plus unswept fees).
+-  `DataKey::Locked(market_id)` (persistent, `ii128`, same TT\ policy as
+    `Market`): the per-market share of that obligation. It is kept in a
+    separate entry so the `Market` XDR layout does not change.
+
+Every collateral movement goes through `transfer_in` / `transfer_out`,
+which measure the actual balance delta around the transfer:
 
 Independent resolution modes, all ultimately calling
 `market_core.resolve(market_id, outcome)`:
@@ -160,6 +184,19 @@ Independent resolution modes, all ultimately calling
   allow fallback signers to propose and attest. If a valid price report arrives before
   the fallback dispute window closes, `resolve_price` immediately supersedes the proposal
   and resolves the market.
+
+-  *Inbound* transfers must increase the contract balance by exactly the
+    requested amount. Any mismatch reverts with `Error::CollateralMismatch`.
+-  *Outbound* transfers must decrease it by exactly the amount (else
+    `CollateralMismatch`), and after the decrement of `TotalLocked` the
+    global guard checks `token.balance(contract) >= TotalLocked`.
+    Otherwise the call reverts with `Error::Insolvent`.
+
+The accounting rules are exactly:
+
+The resolution lifecycle (both modes, the guardian, expiry and market-core's
+status) is model-checked in TLA+; see [formal/README.md](formal/README.md) for
+the properties, the findings and the conformance tests that replay the traces.
 
 None of these modes can be configured until the revealed spec's hash matches the
 market's commitment (`register_price_spec`, `register_signer_spec`,
@@ -265,7 +302,16 @@ The resolver never depends on `market-core`'s Rust crate — see
 [ADR 0002](adr/0002-cross-contract-calls.md) for why, and what that trades
 off.
 
-### treasury
+| Site                     | Direction           | `Locked` / `TotalLocked` delta |
+|--------------------------|------------------|------------------------------|
+| `create_market`          | creator -> contract | `+= seed_amount`                |
+| `buy`                     | trader -> contract | `+= collateral_in` (net + fee)      |
+| `sell`                    | contract -> trader | `-= collateral_out`                |
+| `redeem`                  | contract -> holder | `-= payout`                        |
+| `claim_pool_remainder`    | contract -> creator| `-= payout`                       |
+| `sweep_fees`              | contract -> recipient| `-= amount`                        |
+
+Notes on the rules:
 
 Holds the agents' pooled USDC and is the *only* path that spends it: an
 agent calls `agent_create_market` / `agent_buy` / `agent_sell` /
@@ -442,6 +488,21 @@ implemented: it would record provenance only, and the events plus the
 successor's own exposure records are enough for an off-chain dashboard
 ([wave-issue 08](wave-issues/08-treasury-exposure-dashboard.md)).
 
+- `buy` locks `collateral_in = net + fee`, because `net` mints sets and
+  `fee` accrues to the protocol/LP shares. The fee remains inside
+  `locked` until `sweep_fees` / `claim_lp_fees` / `claim_pool_remainder`
+  subtract it — it is never double-counted.
+- `sell` burns gross sets and pays out `collateral_out`; the fee
+  `gross - out` stays in the market's fee accrual, and the locked delta is
+  only the cash actually leaving.
+- `claim_pool_remainder` zeroes the reserves and subtracts the payout
+  from `locked`. After this claim, `sets_minted`+`$fees_accrued` is no
+  longer the correct figure for what the market still owes; the
+  solvency report uses `locked` alone in that state.
+- `sweep_fees` subtracts the swept amount from `locked`.
+- Any negative result returns `Error::Overflow` (with a `debug_assert`
+  in debug builds).
+
 **Permissionless settlement & exposure release (#45).** Settle market capital
 without depending on hot agent keys: `settle_market(caller, market_id)` is
 permissionless and idempotent. It redeems the treasury's outcome-share position if
@@ -487,15 +548,222 @@ is documented at length in `contracts/treasury/src/lib.rs` (see
 in the same file's test module — a test that's been verified to fail
 without the fix and pass with it (see the commit history / docs/STATUS.md).
 
+The global guard is the only check that can be made against the shared
+ledger balance: a per-market figure cannot be verified on-chain because
+the balance is shared across markets. Donations (anyone sending tokens
+directly to the contract) make `balance > TotalLocked`, which is
+normal and must not revert.
+
+#### Treasury cap guarantees
+
+What the caps actually promise, as checked by
+`contracts/integration-tests/tests/treasury_caps_exhaustive` (below), so that
+"daily cap" is not over-read. Auth is mocked in that search; wrong-caller
+behaviour is covered by each contract's own tests.
+
+**Guaranteed** (every reachable state of the searched alphabet, I1-I9):
+
+| | Guarantee |
+|---|---|
+| I1 per call | A successful `agent_buy` spends at most `max_trade`. A successful `agent_create_market` seeds at most `max_seed` (the creation policy, which may exceed `max_trade`; it is also at most `max_market`). |
+| I2 per market | Cumulative agent spend into one market, seed included, is at most `max_market`, for the market's whole life: it is never freed by sells or `close_trade`. `MarketExposure.amount` equals the observed sum of spends. |
+| I3 daily | The treasury's reported window (`daily_usage`) never exceeds `max_daily` and equals the spends observed since its reported start. |
+| I4 sliding 24h | In **any** interval `[t, t + 86_400)` the agent spends at most `max_daily`. The window is hourly buckets summed over the trade's hour and the 24 hours before it: effectively 24-25h, conservative and never permissive. |
+| I5 pause | While the admin has paused, `agent_buy`, `agent_create_market` and `agent_sell` all fail with `Paused`. `close_trade`, `redeem` and `claim_pool_remainder` stay callable: they spend nothing and return capital. (An automatic drawdown pause differs: reduce-only sells stay allowed; not part of this search.) |
+| I6 accounting | Treasury token balance = initial - Σ spends + Σ returns (sells, redeems, claims), from the operations' own parameters. |
+| I7 sell neutrality | `agent_sell` changes neither the daily window nor any `MarketExposure`. |
+| I8 | Net exposure stays within `max_net_exposure`. |
+| I9 completeness | An operation within every observable cap succeeds, so a cap is not silently stricter than documented (this is what catches an off-by-one such as `>=` for `>` on `max_market`). |
+| Atomicity | A failed call changes no observed quantity (balances, window, exposures, net exposure). |
+
+**Not guaranteed:**
+
+- *Admin actions are not agent spending.* `withdraw`, `emergency_withdraw`,
+  config changes after their timelock, and the market-core admin swapping the
+  resolver or treasury role all bypass these caps by design.
+- *`max_daily` is not a calendar-day cap.* It is a trailing 24-25h cap, so the
+  agent can be refused a spend that is a few minutes over 24h after a previous
+  one. It is also not a cap on losses by itself: an agent may spend `max_daily`
+  every 25 hours, and per market until `max_market`.
+- *History: this used to be 2x.* The original fixed window reset to `now` at
+  the first call after 24h, so an agent could spend `max_daily` just before a
+  reset and `max_daily` just after (up to `2 * max_daily` in a short span). The
+  sliding window fixed that; the explorer was written expecting to *report*
+  that violation (I4) and now finds none. Mutating `BUCKETS` from 25 to 24
+  brings I4 back with a depth-5 counterexample (5U spent in one 24h span
+  against `max_daily = 4U`), pinned by the treasury unit test
+  `explorer_i4_sequence_stays_within_max_daily`.
+- *Prices and breakers are out of scope.* The search lifts the price policy;
+  slippage, price band and impact are tested separately.
+- *The search is bounded.* "Holds up to depth N over this alphabet", not a
+  proof for all sequences, caps or market counts.
+
+##### The search
+
+```bash
+cargo test -p integration-tests treasury_caps_exhaustive -- --nocapture          # depth 6
+TREASURY_SEARCH_DEPTH=8 cargo test -p integration-tests treasury_caps_exhaustive -- --nocapture
+TREASURY_SEARCH_ALPHABET=full ...                  # the complete alphabet
+TREASURY_SEARCH_MARKET_CORE=wasm ...               # market-core in the Soroban VM
+```
+
+Operations: `agent_buy` and `agent_sell` on each market, `agent_create_market`,
+`close_trade`, clock advances `{1, 43_200, 86_399, 86_400}` s, and admin
+`Pause`/`Unpause`, over two pre-existing third-party markets (and up to two
+treasury-created ones). Caps are in units `U` = 100 USDC (`MIN_SEED`): four
+configurations (`max_trade/max_market/max_daily` = 2U/3U/4U, all equal to 2U,
+a `max_seed` of 3U above `max_trade`, and markets that close after a day so
+buys hit `MarketClosed`). Failures are never classified by error code alone
+(a market-core error is re-raised under its own code, and e.g. `MarketClosed`
+is 9, the same as the treasury's `InsufficientBalance`).
+
+- *Order:* breadth-first, so the first violation is a shortest one, printed as
+  a replayable test body (`f.buy(0, 2 * U); f.advance(86_399); ...`).
+- *Memoization:* a canonical key of the behaviourally relevant state: pause
+  flag, `now % 3600`, the window's buckets newest-first, the spends of the last
+  25h by exact age (the history I4 needs), and per market the exposure, open
+  flag, treasury share count (bucketed) and closed status. Absolute time is
+  never in the key, and market reserves deliberately are not (they only decide
+  whether a trade clears market-core, which the share bucket and closed status
+  cover); including them makes almost every trade ordering a distinct state.
+- *Symmetry:* the two pre-existing markets are interchangeable, so market
+  summaries are sorted in the key, and an operation on a market whose
+  summary equals a lower-indexed one is skipped.
+- *Snapshots vs replay:* each child state is built either by re-running the
+  path on a fresh world or by restoring an `Env` snapshot of the parent.
+  Measured (`cargo test -p integration-tests -- --ignored branching_benchmark
+  --nocapture`, depth 3): replay 7.4 ms/operation, snapshot 3.7 ms/operation,
+  and the gap grows with depth because replay is O(depth). Both produce
+  identical state counts; snapshot restore is used. Two non-obvious details:
+  `Env::from_snapshot` always writes a test-snapshot JSON file when the `Env`
+  is dropped on a *named* thread (every test thread is), which cost 7 minutes
+  for 4,000 operations, so the search runs on unnamed threads (the SDK skips
+  the write then); and native contracts are not part of a snapshot, so they are
+  re-registered with their constructor turned into a no-op.
+- *Market-core:* the deep search registers `market-core` natively for speed;
+  `market_core_wasm_matches_native` runs depth 4 on the vendored wasm and
+  asserts exactly the same states, operations and growth. The treasury is also
+  native (the wasm artifact does not exist at `cargo test` time), i.e. the real
+  contract code, not a mock.
+- *Alphabet:* the default `lean` alphabet drops 1s clock ticks, `close_trade`,
+  seeds that always fail the seed cap, sells with no shares and a second
+  treasury-created market; `full` is the complete one and is for deeper runs
+  (below).
+- *Results* (depth 6, lean, native market-core, 8 threads): 9,940 abstract
+  states, 115,208 operations, 103 s; no violation. `full`, depth 5: 7,653
+  states, 130,218 operations, 98 s (measured). The work grows about 3.5-5x per
+  depth, so `full` at depth 6 and `lean` at depth 8 are estimated at roughly
+  8 and 20 minutes on 8 cores (not measured). The nightly workflow
+  (`.github/workflows/treasury-search-nightly.yml`) runs a deeper search and
+  keeps its output as an artifact; hosted runners have fewer cores, so expect
+  a few times longer there.
+- *Teeth* (recorded in the PR): `new_market > max_market` mutated to `>=` is
+  reported at depth 2 as an I9 failure (`1U + 2U = 3U` is exactly the cap and
+  must be allowed); deleting `assert_not_paused` from `agent_buy` is reported
+  at depth 2 as an I5 violation (`f.pause(true); f.buy(0, 1 * U);`); the
+  24-bucket window above is reported as I4 at depth 5.
+
 ### reasoning-registry
 
-An admin allow-list of agent addresses; a registered agent calls
-`publish_trace(agent, market_id, action, trace_hash, cid)` to record that a
-trace exists, returning a `trace_id`. `verify_trace(trace_id, candidate_hash)`
-is the check a paying subscriber (via `x402/`) or a frontend runs before
-trusting fetched trace content. Traces are also indexed per market
-(`market_trace_count` / `market_trace_at`) via a counter rather than an
-unbounded `Vec`, so the index never has an unbounded-growth storage cost.
+**Views.** `solvency_report(market_id)` returns a `SolvencyReport`
+with the market's locked collateral, fees accrued, sets minted, and
+ outstanding-claims upper bound (`sets_minted + fees_accrued` while
+open or unclaimed, derived from `locked` alone after the LP claim),
+plus `lp_claimed`. `global_solvency()` returns `(token.balance(contract),
+TotalLocked)`. The per-market figure is an audit aid, not an enforced
+check; the global guard is the enforced one.
+
+**Misbehaving collateral.** A fee-on-transfer or rebasing SEP-41 token, a
+Classic asset whose issuer has `AUTH_CLAWBACK_ENABLED` and claws back
+from the contract, or a buggy custom collateral each make the contract hold
+less than it owes. The balance-delta checks reject fee-on-transfer
+collateral at the first inflow (`CollateralMismatch`). If the issuer claws
+back between transactions, the next outbound transfer trips `Insolvent`.
+That freezes payouts globally — intentional fail-safe behaviour, so the
+shortfall is visible instead of silently draining other markets.
+
+The contract has no upgrade path today (see `scripts/deploy-testnet.sh`), so
+this is a new-deployment-only change: a redeployed market-core starts from
+`TotalLocked = 0`. There is deliberately no admin setter to backfill the
+counter for pre-existing markets, because that would be an obvious
+privileged backdoor.
+
+**Fee split and recipient snapshot.** `create_market` snapshots a
+`FeeTerms { recipient, protocol_share_bps }` side entry per market, so
+`set_treasury` / `set_protocol_fee_share_bps` only affect markets created
+after them. Each trade's fee is split once at accrual time
+(`math::split_fee`, protocol shares round up so `protocol + lp == fee`
+exactly): the protocol portion accumulates in `Market.fees_accrued` and is
+swept to the snapshotted recipient by the permissionless `sweep_fees`(old `FeesSwept` event kept for indexers, plus `FeesSweptTo`); the creator
+portion accumulates in a `LpFees(market_id)` side entry, claimable any time
+(before finality too) via `claim_lp_fees`, and also drained by
+`claim_pool_remainder`. Markets created before this change have no
+`FeeTerms` entry and fall back to the old behavior: recipient = whatever
+`DataKey::Treasury` Holds at sweep time, `protocol_share_bps = 10_000` —
+fully backward compatible, no migration transaction needed. The separate
+LP balance (rather than adding fees to the reserves) is deliberate: it does
+not move `k` or the price and maps directly onto the per-LP fee accumulator
+of the future multi-LP design ([wave-issue 02](wave-issues/02-multi-lp-liquidity.md)).
+
+#### Agent Lifecycle and Trace Annotations (#56)
+
+The reasoning registry models an explicit lifecycle for agents and traces:
+- **Agent lifecycle**: Agents hold `AgentRecord { status: AgentStatus, registered_at: u64 }`.
+  - `Active`: Registered agent permitted to publish traces.
+  - `Retired(at)`: Agent gracefully retired by admin (`retire_agent`) or the agent itself (`retire_self`). Retired agents cannot publish new traces, but their existing traces remain valid. Admin may call `reactivate_agent` to return a retired agent to `Active`.
+  - `Revoked(effective_from, reason)`: Agent revoked by admin (`revoke_agent`) due to compromise or malfeasance. Revocations cannot be reversed or reactivated, preventing history laundering.
+- **Trace flagging**: The admin can annotate suspect traces via `flag_trace(trace_id, reason)` and `unflag_trace(trace_id, reason)`. Flags are annotations appended to a bounded history (max 16 entries) and never modify or erase the underlying trace data.
+- **Trace verdict**: `trace_verdict(trace_id, received_hash)` evaluates validity in strict precedence:
+  1. Not found -> `Err(TraceNotFound)`
+  2. Hash differs -> `TraceVerdict::HashMismatch`
+  3. Active flag -> `TraceVerdict::Flagged(reason)`
+  4. Agent revoked with `trace.published_at >= effective_from` -> `TraceVerdict::AgentRevokedAfter(effective_from)`
+  5. Otherwise -> `TraceVerdict::Valid`
+- **Semantic tightening of `verify_trace`**: `verify_trace` returns `true` only if `trace_verdict` evaluates to `TraceVerdict::Valid`. Clients wishing to perform bare hash comparison without status checks can query `get_trace`.
+
+#### Trace Action Validation and Market Reference Integrity (#55)
+
+Traces reference concrete market actions validated against `market-core`:
+- **Canonical Action Vocabulary**: `TraceAction` replaces free-form strings:
+  | Action | Target Market | Description |
+  | :--- | :--- | :--- |
+  | `CreateMarket` | Issued `market_id` | Creation of a new market on-chain |
+  | `ProposeMarket` | `NO_MARKET` (`u64::MAX`) | Off-chain market proposal prior to creation |
+  | `Buy` | Issued `market_id` | Purchase of YES or NO shares |
+  | `Sell` | Issued `market_id` | Sale of YES or NO shares |
+  | `Skip` | Issued `market_id` | Evaluated market but took no trade action |
+  | `Redeem` | Issued `market_id` | Redemption of winning or voided shares |
+  | `ClaimRemainder` | Issued `market_id` | LP reclamation of unredeemed collateral pool |
+  | `Resolve` | Issued `market_id` | Resolver or oracle resolution attestation |
+  | `Other(Symbol)` | Issued `market_id` or `NO_MARKET` | Forward-compatible custom action; cannot shadow canonical action names |
+- **Market Reference Validation**:
+  - `market_core.market_count()` is checked via cross-contract read.
+  - A referenced `market_id` must satisfy `market_id < market_count()`.
+  - `ProposeMarket` requires `NO_MARKET` (`u64::MAX`), returning `Error::ProposalMustUseNoMarket` if given an actual `market_id`.
+  - Canonical actions (`Buy`, `Sell`, etc.) reject `NO_MARKET` with `Error::MarketRequired`.
+  - View function calls to `market_count()` remain functional even when `market-core` is paused.
+
+#### Merkle-Batched Trace Anchoring (#54)
+
+To slash per-decision publishing costs for high-frequency trading or extensive skip auditing:
+- **Off-chain Batching**: Agents collect up to 4,096 trace hashes off-chain, compute a Merkle tree, and anchor the 32-byte root and manifest CID on-chain via `publish_trace_batch(agent, root, leaf_count, manifest_cid)`.
+- **Cryptographic Specifications**:
+  - **Second-Preimage Resistance**: RFC 6962 domain separation prefixes: leaves hash with `0x00 || trace_hash`, inner nodes hash with `0x01 || left || right`.
+  - **Odd Node Promotion**: An odd child at any tree layer is promoted unchanged to the next level without duplicating or hashing with itself. When verifying an odd node, no proof element is consumed for that layer.
+  - **Bounded Proof Length**: With `MAX_LEAVES = 4096`, proof length is strictly bounded to `MAX_PROOF_LEN = 12`. Any proof exceeding 12 elements is rejected with `Error::InvalidProof`.
+- **Verification**: `verify_trace_inclusion(batch_id, trace_hash, index, proof)` and `compute_merkle_root(leaf_count, trace_hash, index, proof)` enable on-chain and off-chain (x402 verifier, agents) verification against canonical golden test vectors (`docs/vectors/merkle-v1.json`).
+
+#### Ed25519-Signed Trace Attestations (#53)
+
+To enable independent verification of trace authenticity without trusting the registry admin:
+- **Dedicated Agent Signing Keys**: Agents bind dedicated Ed25519 public keys (`BytesN<32>`) to their on-chain identity via `add_signing_key(agent, public_key, proof_sig)`.
+  - **Proof of Possession**: `proof_sig` proves ownership of the secret key by signing `"oracledesk-agent-key-v1" || network_id || registry_id || agent_xdr || public_key`.
+  - **Key Binding & Lifecycle**: Keys are uniquely bound to agents (at most 4 active keys per agent) with full rotation history (`SigningKeyRecord { public_key, added_at, retired_at }`) tracked via `retire_signing_key`.
+- **Domain-Separated Trace Attestation**: `publish_trace_signed(agent, market_id, action, trace_hash, ipfs_cid, signing_key, signature)`:
+  - Message format: `"oracledesk-trace-v1" || network_id || registry_id || agent_xdr || market_id_be || action_tag || trace_hash`.
+  - On-chain verification via `env.crypto().ed25519_verify`.
+  - The attestation signature is stored under `TraceSignature(trace_id)` and queriable via `get_trace_signature` and `verify_trace_signature`.
+- **Zero-Trust Offline Verification**: Any consumer holding the trace JSON and public key (e.g., an x402 subscriber or frontend auditor) can verify authenticity offline without RPC access or reliance on contract admin honesty.
 
 **Known limitation**: Soroban RPC only retains a short window of historical
 events. An indexer (Soroban events → Postgres, replayable) is required for
@@ -554,6 +822,179 @@ no admin.
   `min_shares_out` / `limit_price_bps` bounds plus a deadline from it.
 - **packages/bindings/**: generated TypeScript clients (`scripts/gen-bindings.sh`).
 
+**Trade bounds and circuit breakers.** Two layers of protection beyond the
+share-count slippage parameters:
+
+- *Deadline + limit price* (#12): `buy_v2` / `sell_v2` take a
+  `deadline` (ledger **timestamp**, unix seconds) checked before anything
+  else, and a `limit_price_bps` bounding the **average execution price**
+  (`collateral_in / shares_out` for buys, `collateral_out / shares_in` for
+  sells, fee included, compared by cross-multiplication). `0` means "no
+  limit" for buys; for sells it is trivially satisfied and buys no
+  protection. The original `buy` / `sell` remain as thin wrappers for
+  backward compatibility (same body, no bounds).
+- *Per-market breakers* (#10): `BreakerConfig { max_impact_bps, band_bps }`
+  is snapshotted per market from an admin default (`set_default_breaker`,
+  which rejects `band_bps < max_impact_bps` because that makes one trade
+  cover the whole band). `max_impact_bps` bounds a single trade's
+  |post − pre| YES-price move (`>` — a trade moving exactly the cap
+  passes); `band_bps` bounds |post − ledger-open price|, with the reference
+  stored in short-TTL **temporary** storage keyed by ledger sequence, so it
+  resets by itself every ledger. 0 disables either check; legacy markets
+  have no config and are unaffected. Breaker trips revert with
+  `PriceImpactTooHigh` / `PriceBandExceeded` and — because Soroban rolls
+  back an invocation's events on `Err` — emit **no** event (the error codes
+  and the `would_trip`` / `breaker_config` / `breaker_state` views are the
+  observability path; see the comment on `check_breakers`).
+
+  *Worst-case lock cost.* The band cannot be ratcheted: the reference is
+  the ledger-open price, so an attacker who pushes the price to the band
+  edge only blocks further trades for the rest of that ledger (~5 s) —
+  and pays the trading fee plus price impact to do it, which are both
+  retained by the pool.
+
+**Resolution and payouts.** `resolve(market_id, outcome)` sets the
+final outcome once. `redeem` pays `payout` for a winning position and
+burns it; `lp_claimed` gates `claim_pool_remainder`, which pays the
+creator the residual value of the reserves and zeroes them. Both payouts
+ are subject to the checked transfer and global solvency guard.
+
+### IPFS trace storage
+
+In live mode the agents store traces with `IpfsTraceStore`
+(`agents/core/ipfs-store.ts`; selected by `TRACE_STORE`, see
+`agents/core/trace-store-factory.ts`). The CID that goes on-chain in
+`publish_trace(..., ipfs_cid)` is permanent, because `Trace` entries have no
+update path. So the agent computes the CID itself and does not trust any
+pinning provider to name the content:
+
+- **Raw CIDv1.** The CID is a CIDv1 with the `raw` codec (`0x55`) and a
+  sha2-256 multihash over the exact UTF-8 bytes `buildTrace` hashed
+  (base32 lowercase, `bafkrei…`, 59 characters). Its multihash digest is
+  therefore *equal to* `trace_hash`. A default `ipfs add` (dag-pb/UnixFS,
+  chunked) would hash a protobuf wrapper instead and break that property,
+  so kubo is called with `cid-version=1&raw-leaves=true&hash=sha2-256` and a
+  1 MiB chunker, and traces are limited to one 1 MiB block.
+- **Providers are verified, not trusted.** Any provider that reports a CID
+  different from the local one (compared by value with `CID.equals`, not by
+  string) fails the whole `put`. Pins go to a kubo RPC node and optionally an
+  IPFS Pinning Service API (`POST /pins`, polled until `pinned`). Each
+  provider is retried with jittered backoff, and at least `IPFS_MIN_PINS`
+  must *confirm* the pin. Queued pins count only with `IPFS_ACCEPT_QUEUED=1`.
+- **Retrievability is checked.** Before `put` resolves, the agent GETs
+  `${IPFS_GATEWAY_URL}/<cid>` (the gateway x402 also reads), following
+  redirects, with a byte cap and a timeout, and re-checks `sha256(body)`.
+  The trade or market creation is only submitted after this succeeds. If
+  pinning fails, the action is skipped and logged.
+- The market-maker also pins a small metadata document (question, category,
+  close time, trace hash and CID) and sets the market's `meta_uri` to
+  `ipfs://<cid>`. `local://` URIs remain only in dry-run, or in live mode with
+  `ALLOW_LOCAL_TRACE_STORE=1`.
+
+**Verifying without fetching.** A buyer holding `(trace_hash, ipfs_cid)` from
+the registry can decode the CID: version 1, codec `0x55`, multihash code
+`0x12` (sha2-256), length 32. The 32 digest bytes must equal `trace_hash`.
+With `multiformats`:
+`Buffer.from(CID.parse(cid).multihash.digest).toString("hex") === trace_hash`.
+After fetching, `sha256(body) === trace_hash`, as `x402/trace-verification.ts`
+checks, proves the bytes are the ones the agent committed to.
+
+### Event triggers (agents) vs. the event indexer
+
+`agents/core/events/` (#105) lets agents react to contract events instead
+of waiting for their next scheduled run. It is a **trigger system, not an
+indexer**, and the two must not be confused:
+
+| | Event triggers (`agents/core/events`) | Event indexer (`docs/wave-issues/06-event-indexer.md`) |
+| --- | --- | --- |
+| Purpose | Wake an agent when something it cares about happens | Durable, queryable history for UIs and analytics |
+| Storage | One checkpoint per network and contract set: `{cursor, lastLedger}` plus recently processed event ids, in `EVENTS_STATE_DIR` | Every event, in Postgres |
+| History | None. Starts at the latest ledger; never replays | Replayable from any ledger it has stored |
+| Retention gap | Detected; triggers a full state resync from chain reads | Is the thing it exists to cover |
+| Source of truth | Chain state, re-read before every action | Its own tables |
+
+Flow: `EventSubscriber` polls `getEvents` (cursor pagination, filters
+checked against the RPC's limits, failed contract calls dropped) and hands
+each page to the `Dispatcher`. Events are decoded with the binding specs
+(`decode.ts`, via the SDK's `Spec.parseEvent`) into a typed
+`OracleDeskEvent`, with an `Unknown` variant for anything else.
+
+- **At-least-once delivery.** A page's checkpoint is written only after
+  every handler finished (or the event was dead-lettered). A crash in
+  between redelivers the page, so handlers are idempotent and an LRU of
+  processed ids, saved with the checkpoint, drops repeats.
+- **Ordering.** One market's events run in order; different markets run
+  concurrently up to `EVENTS_CONCURRENCY`.
+- **Failures.** A handler is retried with exponential backoff up to
+  `EVENTS_MAX_ATTEMPTS`, then the event goes to
+  `<EVENTS_STATE_DIR>/dead-letter.jsonl` and the page moves on.
+- **Idle polls** still advance `lastLedger`, so a quiet stretch is not
+  mistaken for a retention gap.
+
+Handlers (`handlers.ts`): `TradeReevaluate` queues a market for the trader
+after a trade of at least `EVENTS_TRADE_THRESHOLD` stroops (re-reading the
+market first); `ProposalWatch` alerts on a `ResolutionProposed` where the
+treasury holds a position and the resolver still reports the proposal as
+standing (cancellations emit no event), with the dispute deadline computed
+from the proposal's ledger timestamp; `FinalityTracker` marks markets final
+on `MarketResolved`, `ResolutionFinalized` or `PriceResolution`; and the
+resync handler re-evaluates every tradable market after a gap.
+
+`npm run trader -- --follow` runs this loop (`runtime/follow.ts`); without
+`--follow` the trader behaves exactly as before.
+
+### Cross-market arbitrage (agents, #108)
+
+Independent FPMM pools can price related markets inconsistently. With
+`ARB_ENABLED=1` the trader runs an `arbitrage` task
+(`runtime/tasks/arbitrage.ts`) over the relations in `ARB_RELATIONS_FILE`:
+
+```json
+{ "relations": [ { "id": "btc-100k-implies-90k", "type": "implies", "a": 12, "b": 7,
+    "resolution": { "a": { "mechanism": "price", "source": "reflector:BTC/USD" },
+                    "b": { "mechanism": "price", "source": "reflector:BTC/USD" } },
+    "voidCorrelation": "joint", "maxCloseSkewSecs": 0 } ] }
+```
+
+- **Relations** (`core/strategies/arbitrage.ts`): `implies` (P(A) <= P(B)),
+  `complement` (P(A) + P(B) = 1) and `exclusive` (P(A) + P(B) <= 1). A
+  relation is rejected unless both markets exist and are open, their close
+  times are within `maxCloseSkewSecs`, and both declare the *same*
+  resolution mechanism and source; a declared `resolutionHash` must equal
+  the market's on-chain commitment. The file's canonical sha256 (the graph
+  hash) is recorded in every trace.
+- **Planning**: for each pair of legs, a payoff table over every outcome the
+  relation allows, plus void scenarios (`joint`: both void together;
+  `independent`: either may void alone, paying half per share), gives the
+  worst-case payout, measured on top of existing treasury holdings. Costs
+  are exact integer FPMM collateral (`collateralForShares`: fees, price
+  impact and rounding). The share count is found by integer ternary search
+  and a +/-64 verification scan, inside `max_trade`, remaining `max_market`
+  headroom, the rolling `max_daily` and `ARB_MAX_NOTIONAL`, and must clear
+  `ARB_MIN_PROFIT_STROOPS` and `ARB_MIN_PROFIT_BPS`.
+- **Risk** (`core/risk.ts`, `checkArbPlan`): treasury caps and existing
+  exposure; `ARB_MARKET_HEADROOM_BPS` of each market's `max_market` kept free
+  for later hedges; `ARB_MAX_UNHEDGED_STROOPS` caps the first leg, which is
+  the exposure left if the second never fills; `ARB_MAX_OPEN_LEGS` and
+  `ARB_MAX_UNWIND_RETRIES` bound concurrent legs and unwind attempts.
+- **Execution** (`core/strategies/arb-executor.ts`): treasury calls are not
+  atomic, so the legs are sequential. The less liquid market goes first,
+  re-quoted and bought with `min_shares_out` = the planned shares. The second
+  market is then re-read; if its cost rose by more than `ARB_MAX_LEG_LOSS`
+  the first leg is sold back with `agent_sell`, otherwise the second leg is
+  bought. Every step is journaled before and after submission in
+  `ARB_JOURNAL_FILE`, and the next run finishes or unwinds any plan a crash
+  interrupted, settling ambiguous submissions from the treasury's positions.
+  A trace with the relation, graph hash, snapshots, plan and leg results is
+  published when a plan completes or is unwound. Dry-run only plans and logs.
+
+**Residual risks.** Between the legs the treasury holds one side naked: a
+fast move can cost up to `ARB_MAX_LEG_LOSS` plus the unwind's price impact,
+and if every unwind attempt fails the leg stays open (`ARB_UNHEDGED` is
+logged and the plan closes as `unwind-failed`). The relation file is
+trusted: a wrong relation produces confident, wrong trades, which is why
+compatibility must be declared and is checked against the chain.
+
 ## Known limitations (see docs/STATUS.md for the full, current list)
 
 - Testnet only; unaudited.
@@ -563,3 +1004,58 @@ no admin.
   deployments (this repo's or a fork's) from trading against the same
   market-core markets; the treasury's caps bound one agent deployment's own
   risk, not systemic market behavior.
+
+### x402 payment preparation, settlement and replay
+
+One HTTP resource server advertises all effective Stellar networks. Each
+facilitator client is scoped to its configured network even if `/supported`
+advertises others; API keys never cross those scopes. Startup defaults to
+requiring every configured network. `X402_REQUIRE_ALL_NETWORKS=false` probes
+and drops unavailable networks, logs structured warnings, and still refuses
+startup if none remain. The process awaits initialization before listening.
+
+For a fresh purchase the trace path is: registry lookup → bounded IPFS fetch →
+raw-byte hash verification → JSON parse and response encoding → durable ledger
+claim → facilitator verification → durable `settling` transition → settlement →
+durable receipt → delivery. No trace bytes are sent before settlement succeeds.
+`@x402/*` are pinned to 2.26.0; requirements and scheme capabilities support only
+`authorization`. Upfront payloads are rejected. `X402_TRACE_LOAD_TIMEOUT_MS`
+(default 10 seconds) bounds the entire preparation phase, including repository
+lookup and body reads, and must be less than half `X402_MAX_TIMEOUT_SECONDS`
+(default 60). An unpaid unknown trace gets 404 rather than a payment challenge;
+this permits enumeration of IDs that are already public in the registry.
+
+The default ledger is SQLite (`X402_LEDGER_PATH`, default `.x402-ledger.sqlite`),
+with WAL, FULL synchronous durability, a unique payment ID and compare-and-set
+state updates. `X402_LEDGER=memory` provides the same interface for tests or
+explicitly ephemeral sessions. A payment ID hashes the network plus the inner
+Stellar transaction hash; fee-bump wrappers and base64 whitespace do not create
+new purchases. A stored claim binds it to trace, recipient, network, amount,
+asset and requirement settings before verification. Concurrent duplicates get
+409 with `Retry-After: 2`; cross-resource or changed-price reuse gets 409.
+
+States are `verifying → settling → settled → delivered`, with `failed` for
+known failures and `indeterminate` for timeouts or interrupted settlement.
+The durable transition runs outside SDK hooks because 2.26.0 logs thrown hook
+errors and can continue. No ledger write means no settlement attempt. Startup
+marks interrupted verifying/settling rows indeterminate; it never retries them.
+Operators must inspect/reconcile these against the chain before taking action.
+A settlement timeout returns 502 without content. Other SDK failures retain
+standard HTTP instructions and payment challenge headers.
+
+Settled/delivered retries return the original stored body and PAYMENT-RESPONSE
+without another facilitator call or gateway fetch. The original raw bytes are
+stored and hash-checked again on replay, so a changed registry record cannot
+change what was purchased. Retries expire at the original persisted deadline,
+bounded by transaction time bounds or maxTimeoutSeconds; expired payments get
+402. Finite ledger bounds and Soroban authorization expirations are checked
+against a live ledger on both first use and replay, using the corresponding
+`STELLAR_TESTNET_RPC_URL` or `STELLAR_MAINNET_RPC_URL`. Failure to obtain that
+anchor fails closed. Database/state conflicts are never auto-settled again.
+
+`GET /admin/payments/:paymentId` requires `Authorization: Bearer X402_ADMIN_TOKEN`
+and is disabled if unset. It returns purchase state and transaction/payer fields,
+with raw trace bytes, response content and requirement keys redacted. The SQLite
+file is permissioned to its owner and git-ignored. Back it up as sensitive
+purchase history. This design supports one service process; shared multi-instance
+locking, refunds and automatic indeterminate reconciliation remain separate work.
