@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
   BPS,
@@ -6,6 +8,9 @@ import {
   calcBuy,
   calcSell,
   collateralOutForShares,
+  grossForShares,
+  mulDivCeil,
+  mulDivFloor,
   priceAfter,
   priceAfterBuy,
   priceAfterSell,
@@ -13,6 +18,8 @@ import {
   seedReserves,
   sellWithinLimit,
   settleValue,
+  collateralForShares,
+  MathError,
 } from "./fpmm.js";
 
 // Same worked examples as math.rs's unit tests and model/fpmm_model.py's
@@ -132,6 +139,72 @@ test("priceAfterBuy matches the reference example shared with math.rs and the Py
   assert.ok(priceAfterSell(true, s) < 5000n);
 });
 
+test("committed cross-language vectors match", () => {
+  const vectorsPath = fileURLToPath(new URL("../../scripts/fpmm-diff/vectors.jsonl", import.meta.url));
+  const lines = readFileSync(vectorsPath, "utf8").trim().split("\n");
+  for (const [i, line] of lines.entries()) {
+    const c = JSON.parse(line) as { fn: string; args: string[]; ok: Record<string, string> };
+    // settle_value's first arg is an outcome name, not a number.
+    const a = c.args.map((x) => (/^-?\d+$/.test(x) ? BigInt(x) : 0n));
+    let actual: Record<string, string>;
+    switch (c.fn) {
+      case "calc_buy": {
+        const q = calcBuy(a[0], a[1], a[2], a[3]);
+        actual = {
+          shares_out: q.sharesOut.toString(),
+          fee: q.fee.toString(),
+          net: q.net.toString(),
+          new_reserve_bought: q.newReserveBought.toString(),
+          new_reserve_other: q.newReserveOther.toString(),
+        };
+        break;
+      }
+      case "calc_sell": {
+        const q = calcSell(a[0], a[1], a[2], a[3]);
+        actual = {
+          shares_in: q.sharesIn.toString(),
+          fee: q.fee.toString(),
+          gross: q.gross.toString(),
+          new_reserve_sold: q.newReserveSold.toString(),
+          new_reserve_other: q.newReserveOther.toString(),
+        };
+        break;
+      }
+      case "seed_reserves": {
+        const s = seedReserves(a[0], a[1]);
+        actual = {
+          reserve_yes: s.reserveYes.toString(),
+          reserve_no: s.reserveNo.toString(),
+          creator_yes: s.creatorYes.toString(),
+          creator_no: s.creatorNo.toString(),
+        };
+        break;
+      }
+      case "mul_div_floor":
+        actual = { value: mulDivFloor(a[0], a[1], a[2]).toString() };
+        break;
+      case "mul_div_ceil":
+        actual = { value: mulDivCeil(a[0], a[1], a[2]).toString() };
+        break;
+      case "price_yes_bps":
+        actual = { value: priceYesBps(a[0], a[1]).toString() };
+        break;
+      case "settle_value":
+        actual = { value: settleValue(c.args[0] as "yes" | "no" | "void", a[1], a[2]).toString() };
+        break;
+      case "gross_for_shares":
+        actual = { gross: grossForShares(a[0], a[1], a[2], a[3]).toString() };
+        break;
+      case "collateral_out_for_shares":
+        actual = { collateral_out: collateralOutForShares(a[0], a[1], a[2], a[3]).toString() };
+        break;
+      default:
+        throw new Error(`line ${i + 1}: unknown fn ${c.fn}`);
+    }
+    assert.deepEqual(actual, c.ok, `shared vector line ${i + 1} (${c.fn})`);
+  }
+});
+
 test("buyWithinLimit and sellWithinLimit mirror the on-chain boundaries", () => {
   // Exact equality passes, one unit over fails, in both directions.
   assert.equal(buyWithinLimit(100n, 100n, 10_000n), true);
@@ -147,4 +220,58 @@ test("buyWithinLimit and sellWithinLimit mirror the on-chain boundaries", () => 
   // a zero average price.
   assert.equal(sellWithinLimit(0n, 1n, 0n), true);
   assert.equal(buyWithinLimit(1n, 1n, 0n), false);
+});
+
+// ─── collateralForShares (#108) ──────────────────────────────────────────────
+
+function sharesOrZero(rB: bigint, rO: bigint, c: bigint, fee: bigint): bigint {
+  if (c <= 0n) return 0n;
+  try {
+    return calcBuy(rB, rO, c, fee).sharesOut;
+  } catch {
+    return 0n;
+  }
+}
+
+test("collateralForShares matches the fpmm_model.py fixtures", () => {
+  const path = fileURLToPath(new URL("../../scripts/fpmm-diff/collateral_for_shares.jsonl", import.meta.url));
+  const lines = readFileSync(path, "utf8").trim().split("\n");
+  assert.ok(lines.length >= 40);
+  for (const line of lines) {
+    const c = JSON.parse(line) as { args: string[]; collateral_in: string };
+    const [rB, rO, s, fee] = c.args.map(BigInt);
+    assert.equal(collateralForShares(rB, rO, s, fee).toString(), c.collateral_in, line);
+  }
+});
+
+test("collateralForShares is the minimum collateral that buys the target (exhaustive, small reserves)", () => {
+  for (const [rB, rO] of [[50n, 50n], [7n, 90n], [90n, 7n], [1n, 30n]]) {
+    for (const fee of [0n, 100n, 3_000n]) {
+      for (let s = 1n; s <= rB * 2n; s++) {
+        let brute = 1n;
+        while (sharesOrZero(rB, rO, brute, fee) < s) brute++;
+        assert.equal(collateralForShares(rB, rO, s, fee), brute, `rB=${rB} rO=${rO} fee=${fee} s=${s}`);
+      }
+    }
+  }
+});
+
+test("collateralForShares stays minimal on large random pools", () => {
+  let seed = 108n;
+  const next = () => (seed = (seed * 6364136223846793005n + 1442695040888963407n) & ((1n << 64n) - 1n));
+  for (let i = 0; i < 500; i++) {
+    const rB = (next() % 10n ** 13n) + 1n;
+    const rO = (next() % 10n ** 13n) + 1n;
+    const fee = [0n, 30n, 100n, 250n][Number(next() % 4n)];
+    const s = (next() % (rB * 3n)) + 1n;
+    const c = collateralForShares(rB, rO, s, fee);
+    assert.ok(sharesOrZero(rB, rO, c, fee) >= s);
+    assert.ok(sharesOrZero(rB, rO, c - 1n, fee) < s);
+  }
+});
+
+test("collateralForShares rejects invalid input", () => {
+  assert.throws(() => collateralForShares(0n, 1n, 1n, 0n), MathError);
+  assert.throws(() => collateralForShares(1n, 1n, 0n, 0n), MathError);
+  assert.throws(() => collateralForShares(1n, 1n, 1n, 10_000n), MathError);
 });

@@ -3,6 +3,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { parseTunables } from "../core/config.js";
 import type { StellarAdapter } from "../stellar/adapter.js";
 import { main } from "./trader.js";
 
@@ -26,7 +27,7 @@ function fakeAdapter(quoteShares: bigint, calls: Record<string, unknown>[]): Ste
 test("trader computes non-zero min_shares_out and limit_price_bps from a fresh quote", async () => {
   const calls: Record<string, unknown>[] = [];
   const env = { TRACE_STORE_DIR: await mkdtemp(join(tmpdir(), "trader-test-")) };
-  await main(fakeAdapter(QUOTE_SHARES, calls), env, () => 1_000_000);
+  await main(fakeAdapter(QUOTE_SHARES, calls), parseTunables(env), () => 1_000_000);
 
   assert.equal(calls.length, 1);
   const args = calls[0];
@@ -48,7 +49,7 @@ test("trader honours SLIPPAGE_BPS and DEADLINE_SECS overrides", async () => {
     SLIPPAGE_BPS: "100",
     DEADLINE_SECS: "30",
   };
-  await main(fakeAdapter(QUOTE_SHARES, calls), env, () => 2_000_000);
+  await main(fakeAdapter(QUOTE_SHARES, calls), parseTunables(env), () => 2_000_000);
 
   const args = calls[0];
   assert.equal(args.min_shares_out, (QUOTE_SHARES * 9_900n) / 10_000n);
