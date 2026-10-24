@@ -18,14 +18,14 @@ export const BPS = 10_000n;
 /**
  * Maximum number of complete sets for a 7-decimal collateral.
  *
- * @edeprecated Use `boundsForDecimals(7)` instead. This constant is
+ * @deprecated Use `boundsForDecimals(7)` instead. This constant is
  * kept only as a 7-decimal alias for tests and for backward compatibility;
  * contract logic derives its bounds from the collateral decimals.
  */
-export const MAX_SETS = 1_000_000_000_000_000n ; // 1e15 = 100M USDC (7 dp)
+export const MAX_SETS = 1_000_000_000_000_000n; // 1e15 = 100M USDC (7 dp)
 
-export const MIN_PROB_BPS = 100n ; // 1%
-export const MAX_PROB_BPS = 9_900n ; // 99%
+export const MIN_PROB_BPS = 100n; // 1%
+export const MAX_PROB_BPS = 9_900n; // 99%
 
 /** Maximum supported collateral decimals. */
 export const MAX_DECIMALS = 18;
@@ -104,7 +104,7 @@ export function seedReserves(seed: bigint, yesBps: bigint): SeedReserves {
   let reserveNo: bigint;
   if (p >= BPS / 2n) {
     reserveYes = mulDivFloor(seed, BPS - p, p);
-    reserveNo= seed;
+    reserveNo = seed;
   } else {
     reserveYes = seed;
     reserveNo = mulDivFloor(seed, p, BPS - p);
