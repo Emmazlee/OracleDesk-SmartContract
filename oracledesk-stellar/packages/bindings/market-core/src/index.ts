@@ -55,31 +55,6 @@ export const Errors = {
   /**
    * `buy_v2` / `sell_v2` called with `env.ledger().timestamp() > deadline`.
    */
-  19: {message:"DeadlineExpired"},
-  /**
-   * `buy_v2` / `sell_v2` average execution price worse than the limit.
-   */
-  20: {message:"LimitPriceExceeded"},
-  /**
-   * A single trade would move the price more than `max_impact_bps`.
-   * (Both this and the band reject the whole invocation, so their events,
-   * if any, roll back with it — see the note on `BreakerConfig`.)
-   */
-  21: {message:"PriceImpactTooHigh"},
-  /**
-   * Cumulative same-ledger movement would exceed `band_bps`.
-   */
-  22: {message:"PriceBandExceeded"},
-  23: {message:"NoPendingWiring"},
-  24: {message:"InvalidWiring"},
-  /**
-   * `accept_admin`/`cancel_admin_transfer` called with nothing proposed.
-   */
-  25: {message:"NoPendingAdmin"},
-  /**
-   * A proposed admin handover was not accepted within its `expires_at`.
-   */
-  26: {message:"PendingAdminExpired"}
 }
 
 
