@@ -54,14 +54,6 @@ export const Errors = {
   17: {message:"AlreadyClaimed"},
   18: {message:"Overflow"},
   /**
-   * `buy_v2` / `sell_v2` called with `env.ledger().timestamp() > deadline`.
-   */
-  19: {message:"DeadlineExpired"},
-  /**
-   * `buy_v2` / `sell_v2` average execution price worse than the limit.
-   */
-  20: {message:"LimitPriceExceeded"},
-  /**
    * A single trade would move the price more than `max_impact_bps`.
    * (Both this and the band reject the whole invocation, so their events,
    * if any, roll back with it — see the note on `BreakerConfig`.)
