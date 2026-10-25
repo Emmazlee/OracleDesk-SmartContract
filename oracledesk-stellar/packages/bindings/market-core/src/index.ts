@@ -1,3 +1,4 @@
+// Regenerated bindings for market-core. Adds `sell_shares` / `quote_sell_shares`.
 import { Buffer } from "buffer";
 import { Address } from "@stellar/stellar-sdk";
 import {
@@ -55,6 +56,30 @@ export const Errors = {
   /**
    * `buy_v2` / `sell_v2` called with `env.ledger().timestamp() > deadline`.
    */
+  19: {message:"DeadlineExpired"},
+  /**
+   * `buy_v2` / `sell_v2` average execution price worse than the limit.
+   */
+  20: {message:"LimitPriceExceeded"},
+  /**
+   * A single trade would move the price more than `max_impact_bps`.
+   * (Both this and the band reject the whole invocation, so their events,
+   * if any, roll back with it — see the note on `BreakerConfig`.)
+   */
+  21: {message:"PriceImpactTooHigh"},
+  /**
+   * Cumulative same-ledger movement would exceed `band_bps`.
+   */
+  22: {message:"PriceBandExceeded"},
+  /**
+   * A transfer moved a different amount than requested (fee-on-transfer,
+   * rebasing, or a buggy collateral token).
+   */
+  23: {message:"CollateralMismatch"},
+  /**
+   * The contract's collateral balance is below its outstanding obligations.
+   */
+  24: {message:"Insolvent"}
 }
 
 
@@ -227,6 +252,19 @@ export interface Client {
   sell: ({trader, market_id, outcome, collateral_out, max_shares_in}: {trader: string, market_id: u64, outcome: Outcome, collateral_out: i128, max_shares_in: i128}, options?: MethodOptions) => Promise<AssembledTransaction<Result<i128>>>
 
   /**
+   * Construct and simulate a sell_shares transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Sell exactly `shares_in` of `outcome` and receive the collateral the
+   * constant-product curve allows, rounded in the pool's favour. Returns
+   * the collateral paid out. Reverts if fewer than `min_collateral_out`
+   * would be received.
+   * 
+   * Unlike `sell`, this needs no off-chain inversion: clients can express
+   * "sell 37.5 YES shares" or "close my whole position" exactly. The
+   * arithmetic lives in `math::calc_sell_shares`.
+   */
+  sell_shares: ({trader, market_id, outcome, shares_in, min_collateral_out}: {trader: string, market_id: u64, outcome: Outcome, shares_in: i128, min_collateral_out: i128}, options?: MethodOptions) => Promise<AssembledTransaction<Result<i128>>>
+
+  /**
    * Construct and simulate a admin transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
    */
   admin: (options?: MethodOptions) => Promise<AssembledTransaction<Result<string>>>
@@ -296,6 +334,15 @@ export interface Client {
    * Shares a `sell` for exactly `collateral_out` would consume right now.
    */
   quote_sell: ({market_id, outcome, collateral_out}: {market_id: u64, outcome: Outcome, collateral_out: i128}, options?: MethodOptions) => Promise<AssembledTransaction<Result<i128>>>
+
+  /**
+   * Construct and simulate a quote_sell_shares transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Collateral a `sell_shares` of `shares_in` would pay out right now.
+   * 
+   * Like `quote_sell`, this does not check tradability: it is a pure
+   * view of the curve and will quote even after the market closes.
+   */
+  quote_sell_shares: ({market_id, outcome, shares_in}: {market_id: u64, outcome: Outcome, shares_in: i128}, options?: MethodOptions) => Promise<AssembledTransaction<Result<i128>>>
 
   /**
    * Construct and simulate a set_paused transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
@@ -540,6 +587,7 @@ export class Client extends ContractClient {
   public readonly fromJSON = {
     buy: this.txFromJSON<Result<i128>>,
         sell: this.txFromJSON<Result<i128>>,
+        sell_shares: this.txFromJSON<Result<i128>>,
         admin: this.txFromJSON<Result<string>>,
         buy_v2: this.txFromJSON<Result<i128>>,
         redeem: this.txFromJSON<Result<i128>>,
@@ -550,6 +598,7 @@ export class Client extends ContractClient {
         get_config: this.txFromJSON<Result<Config>>,
         get_market: this.txFromJSON<Result<Market>>,
         quote_sell: this.txFromJSON<Result<i128>>,
+        quote_sell_shares: this.txFromJSON<Result<i128>>,
         set_paused: this.txFromJSON<Result<void>>,
         sweep_fees: this.txFromJSON<Result<i128>>,
         would_trip: this.txFromJSON<Result<boolean>>,
