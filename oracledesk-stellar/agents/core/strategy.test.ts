@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { calcBuy, priceAfterBuy } from "./fpmm.js";
-import { decideMarketProposal, decideTrade, twapFromObservations } from "./strategy.js";
+import { decideMarketProposal, decideTrade, decideTradeSized, twapFromObservations } from "./strategy.js";
+import type { CapsView } from "./sizing.js";
 
 test("decideMarketProposal skips a signal with no actionable estimate", () => {
   const d = decideMarketProposal(
@@ -202,4 +203,42 @@ test("decideTrade skips when every size would trip the impact cap", () => {
     { minEdgeBps: 100, tradeSizeStroops: 50n, maxImpactBps: 10 },
   );
   assert.equal(d.action, "skip");
+});
+
+test("decideTradeSized buys less than a fixed order on a thin pool", () => {
+  const market = {
+    marketId: 3,
+    question: "thin",
+    yesBps: 5_000,
+    closeTime: 0,
+    reserveYesStroops: 100_000n,
+    reserveNoStroops: 100_000n,
+    feeBps: 100,
+  };
+  const caps: CapsView = {
+    maxTrade: 50_000n,
+    maxMarket: 100_000n,
+    marketExposure: 0n,
+    maxDaily: 100_000n,
+    dailyUsed: 0n,
+    availableCapital: 50_000n,
+  };
+  const decision = decideTradeSized(
+    market,
+    { reserveYes: 100_000n, reserveNo: 100_000n, feeBps: 100n, setsMinted: 0n },
+    { yes: 0n, no: 0n },
+    caps,
+    { fairYesBps: 7_000n, uncertaintyBps: 0n },
+    {
+      kellyFractionNumerator: 1n,
+      kellyFractionDenominator: 4n,
+      bufferBps: 25n,
+      slippageBps: 50n,
+      minTradeStroops: 1n,
+    },
+    100,
+  );
+  assert.equal(decision.action, "buy");
+  assert.ok(decision.collateralInStroops! < 50_000n);
+  assert.ok(decision.sizing);
 });

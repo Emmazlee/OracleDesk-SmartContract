@@ -11,6 +11,7 @@
  */
 
 import { calcBuy, priceAfterBuy, priceYesBps } from "./fpmm.js";
+import { sizeBuyDetailed, type Belief, type CapsView, type Holdings, type PoolView, type SizedBuy, type SizingParams, type SizingReport } from "./sizing.js";
 
 export interface MarketSignal {
   /** Free-text description of what was observed (a news event, an oracle
@@ -112,6 +113,44 @@ export interface TraderDecision {
   reasoning: string;
   outcome?: "Yes" | "No";
   collateralInStroops?: bigint;
+}
+
+export type SizedTraderDecision = TraderDecision & { sizing?: SizingReport; sizedBuy?: SizedBuy };
+
+/** A cap-aware strategy path; the legacy fixed-size decision remains available. */
+export function decideTradeSized(
+  market: MarketState,
+  pool: PoolView,
+  holdings: Holdings,
+  caps: CapsView,
+  belief: Belief,
+  params: SizingParams,
+  minEdgeBps = 0,
+): SizedTraderDecision {
+  const edge = Number(belief.fairYesBps) - market.yesBps;
+  if (Math.abs(edge) < minEdgeBps) {
+    return {
+      action: "skip",
+      reasoning: `edge ${edge}bps on market ${market.marketId} is below the ${minEdgeBps}bps threshold`,
+    };
+  }
+  const result = sizeBuyDetailed(pool, holdings, caps, belief, params);
+  const sizedBuy = result.buy;
+  if (!sizedBuy) {
+    return {
+      action: "skip",
+      reasoning: `sizing found no executable trade for market ${market.marketId}`,
+      sizing: result.report,
+    };
+  }
+  return {
+    action: "buy",
+    reasoning: `market ${market.marketId} sized ${sizedBuy.collateralIn} stroops on the ${sizedBuy.outcome} FPMM curve (binding: ${sizedBuy.binding})`,
+    outcome: sizedBuy.outcome,
+    collateralInStroops: sizedBuy.collateralIn,
+    sizing: result.report,
+    sizedBuy,
+  };
 }
 
 /**

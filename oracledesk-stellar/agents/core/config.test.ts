@@ -94,9 +94,13 @@ test("an unset AGENT_MODE defaults to dry-run with documented defaults", async (
   assert.equal(cfg.rpcUrl, NETWORKS.testnet.rpcUrl);
   assert.equal(cfg.trading.minEdgeBps, 500);
   assert.equal(cfg.trading.tradeSizeStroops, 100_000_000n);
+  assert.deepEqual(cfg.trading.kellyFraction, { numerator: 1n, denominator: 4n });
+  assert.equal(cfg.trading.sizingBufferBps, 25);
+  assert.equal(cfg.trading.minTradeStroops, 1_000_000n);
+  assert.equal(cfg.trading.fairUncertaintyBps, 500);
   assert.equal(cfg.maker.defaultSeedStroops, 1_500_000_000n);
   assert.equal(cfg.agentSecret, undefined);
-  assert.match(cfg.deploymentsFile, /deployments\/testnet\.json$/);
+  assert.match(cfg.deploymentsFile, /deployments[\\/]testnet\.json$/);
 });
 
 test("unknown and empty agent modes are rejected", async () => {
@@ -315,4 +319,10 @@ test("live startup runs both probes", async () => {
 test("parseTunables validates the same fields without a deployment", () => {
   assert.equal(parseTunables({ SLIPPAGE_BPS: "100" }).trading.slippageBps, 100);
   assert.throws(() => parseTunables({ SLIPPAGE_BPS: "1.0" }), AgentConfigError);
+  assert.deepEqual(parseTunables({ KELLY_FRACTION: "0.125" }).trading.kellyFraction, {
+    numerator: 125n,
+    denominator: 1000n,
+  });
+  assert.throws(() => parseTunables({ KELLY_FRACTION: "0" }), AgentConfigError);
+  assert.throws(() => parseTunables({ KELLY_FRACTION: "1.1" }), AgentConfigError);
 });

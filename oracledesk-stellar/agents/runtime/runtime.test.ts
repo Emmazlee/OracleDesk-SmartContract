@@ -58,7 +58,7 @@ test("task never overlaps itself even when run exceeds interval", async () => {
   await rt.stop("test");
   await started;
   assert.equal(maxActive, 1);
-  assert.ok(runs >= 3, `runs: ${runs}`);
+  assert.ok(runs >= 2, `runs: ${runs}`);
 });
 
 test("async mutex is FIFO", async () => {

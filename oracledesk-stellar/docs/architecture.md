@@ -872,6 +872,23 @@ no admin.
   `min_shares_out` / `limit_price_bps` bounds plus a deadline from it.
 - **packages/bindings/**: generated TypeScript clients (`scripts/gen-bindings.sh`).
 
+### Trader sizing
+
+The trader's optional sized path computes an impact limit by binary-searching
+the integer `calcBuy` curve, so it respects the contract's fee and
+pool-favoring rounding rather than a floating-point reserve approximation.
+It shrinks the fair-value probability by `FAIR_UNCERTAINTY_BPS`, maximizes
+expected binary-settlement log wealth with existing YES/NO holdings, and
+applies the rational `KELLY_FRACTION` (default 0.25). The result is further
+bounded by `TRADE_SIZE_STROOPS`, treasury market/daily/capital headroom and
+the market's `MAX_SETS` capacity. A report containing the inputs, intermediate
+limits and binding constraint is included in the reasoning trace. `SLIPPAGE_BPS`
+sets the minimum share output from the exact integer quote, while the trader
+also re-quotes immediately before submission and applies a deadline.
+
+The limit protects the estimated post-trade marginal price from crossing
+`effective fair value - SIZING_BUFFER_BPS`; it cannot guarantee a fill if
+another transaction changes the pool between the snapshot and execution.
 **Trade bounds and circuit breakers.** Two layers of protection beyond the
 share-count slippage parameters:
 

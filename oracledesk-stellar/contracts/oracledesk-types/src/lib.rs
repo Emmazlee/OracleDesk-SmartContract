@@ -24,7 +24,7 @@
 //! `contracts/resolver`'s `shared_types_are_byte_identical_to_imported` test
 //! pins that byte-for-byte.
 
-use soroban_sdk::{Address, BytesN, Symbol, Vec};
+use soroban_sdk::{contracttype, Address, BytesN, Symbol, Vec};
 
 // ---------------------------------------------------------------------------
 // market-core outcome surface

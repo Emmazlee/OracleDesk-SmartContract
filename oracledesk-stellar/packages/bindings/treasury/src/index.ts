@@ -84,24 +84,24 @@ export const Errors = {
   /**
    * Category exposure would exceed its correlation cap (#49).
    */
-  44: {message:"CategoryCapExceeded"},
+  59: {message:"CategoryCapExceeded"},
   /**
    * Close-date bucket exposure would exceed its cap (#49).
    */
-  45: {message:"BucketCapExceeded"},
+  60: {message:"BucketCapExceeded"},
   /**
    * `accept_admin`/`cancel_admin_transfer` called with nothing proposed.
    */
-  46: {message:"NoPendingAdmin"},
+  61: {message:"NoPendingAdmin"},
   /**
    * A proposed admin handover was not accepted within its `expires_at`.
    */
-  47: {message:"PendingAdminExpired"},
+  62: {message:"PendingAdminExpired"},
   /**
    * `agent_create_market_and_reveal` was given a malformed resolution
    * envelope or a rule outside the two primary modes (#64).
    */
-  48: {message:"InvalidResolution"}
+  63: {message:"InvalidResolution"}
 }
 
 

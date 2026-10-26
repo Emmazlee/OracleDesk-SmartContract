@@ -553,16 +553,16 @@ pub enum Error {
     YieldWithdrawFailed = 57,
     VenueHasPrincipal = 58,
     /// Category exposure would exceed its correlation cap (#49).
-    CategoryCapExceeded = 44,
+    CategoryCapExceeded = 59,
     /// Close-date bucket exposure would exceed its cap (#49).
-    BucketCapExceeded = 45,
+    BucketCapExceeded = 60,
     /// `accept_admin`/`cancel_admin_transfer` called with nothing proposed.
-    NoPendingAdmin = 46,
+    NoPendingAdmin = 61,
     /// A proposed admin handover was not accepted within its `expires_at`.
-    PendingAdminExpired = 47,
+    PendingAdminExpired = 62,
     /// `agent_create_market_and_reveal` was given a malformed resolution
     /// envelope or a rule outside the two primary modes (#64).
-    InvalidResolution = 48,
+    InvalidResolution = 63,
 }
 
 #[contractevent]

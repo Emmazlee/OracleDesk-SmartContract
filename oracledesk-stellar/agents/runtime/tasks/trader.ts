@@ -8,7 +8,8 @@
  * trace through the pending-trace queue.
  */
 import { BPS } from "../../core/fpmm.js";
-import { decideTrade, type MarketState } from "../../core/strategy.js";
+import { decideTrade, decideTradeSized, type MarketState } from "../../core/strategy.js";
+import type { CapsView, Holdings, SizingParams } from "../../core/sizing.js";
 import { buildTrace, type TraceStore } from "../../core/trace.js";
 import {
   isDueDiligenceApproved,
@@ -28,10 +29,14 @@ export interface TraderCandidate {
   questionHash?: string;
   /** Ledger the market state was read at, if known. */
   ledger?: number;
+  holdings?: Holdings;
+  caps?: CapsView;
+  setsMinted?: bigint;
 }
 
 export interface TraderDeps {
-  adapter: Pick<StellarAdapter, "mode" | "agent" | "quoteBuy" | "agentBuyV2" | "publishTrace">;
+  adapter: Pick<StellarAdapter, "mode" | "agent" | "quoteBuy" | "agentBuyV2" | "publishTrace">
+    & Partial<Pick<StellarAdapter, "riskCaps" | "marketExposure" | "treasuryPosition">>;
   traceStore: TraceStore;
   candidates: () => Promise<TraderCandidate[]>;
   /** This deployment's treasury contract id (creator of our own markets). */
@@ -39,6 +44,8 @@ export interface TraderDeps {
   minEdgeBps: number;
   tradeSizeStroops: bigint;
   slippageBps: bigint;
+  sizingParams?: SizingParams;
+  uncertaintyBps?: bigint;
   deadlineSecs: number;
   /** Unix seconds. */
   nowSecs: () => number;
@@ -79,15 +86,40 @@ export async function traderTick(deps: TraderDeps, ctx: TaskContext): Promise<vo
     }
     await ctx.locks.withLock(market.marketId, async () => {
       ctx.state.set(EVALUATED, String(market.marketId), { at: ctx.now(), ledger: c.ledger, yesBps: market.yesBps });
-      const decision = decideTrade(market, fairValueBps, { minEdgeBps: deps.minEdgeBps, tradeSizeStroops: deps.tradeSizeStroops });
+      const pool = market.reserveYesStroops !== undefined && market.reserveNoStroops !== undefined && market.feeBps !== undefined
+        ? {
+            reserveYes: market.reserveYesStroops,
+            reserveNo: market.reserveNoStroops,
+            feeBps: BigInt(market.feeBps),
+            setsMinted: c.setsMinted ?? 0n,
+          }
+        : undefined;
+      const sized = pool && c.holdings && c.caps && deps.sizingParams
+        ? decideTradeSized(
+            market,
+            pool,
+            c.holdings,
+            c.caps,
+            { fairYesBps: BigInt(fairValueBps), uncertaintyBps: deps.uncertaintyBps ?? 0n },
+            deps.sizingParams,
+            deps.minEdgeBps,
+          )
+        : undefined;
+      const decision = sized ?? decideTrade(market, fairValueBps, {
+        minEdgeBps: deps.minEdgeBps,
+        tradeSizeStroops: deps.tradeSizeStroops,
+      });
       ctx.log.info("TRADER_DECISION", { market: market.marketId, action: decision.action, reasoning: decision.reasoning });
       if (decision.action === "skip") return;
 
       const outcome = { tag: decision.outcome!, values: undefined as void };
       const collateralIn = decision.collateralInStroops!;
       const quoted = await deps.adapter.quoteBuy({ market_id: BigInt(market.marketId), outcome, collateral_in: collateralIn });
-      const minSharesOut = (quoted * (BPS - deps.slippageBps)) / BPS;
-      const limitPriceBps = decision.outcome === "Yes" ? fairValueBps : Number(BPS) - fairValueBps;
+      const minSharesOut = sized?.sizedBuy?.minSharesOut
+        ?? (quoted * (BPS - deps.slippageBps)) / BPS;
+      const limitPriceBps = sized?.sizing
+        ? Number(sized.sizing.inputs.targetBps)
+        : decision.outcome === "Yes" ? fairValueBps : Number(BPS) - fairValueBps;
       const deadline = BigInt(deps.nowSecs() + deps.deadlineSecs);
       ctx.log.info("TRADER_QUOTE", { quoted, minSharesOut, limitPriceBps, deadline });
       if (ctx.signal.aborted) return;
@@ -102,7 +134,7 @@ export async function traderTick(deps: TraderDeps, ctx: TaskContext): Promise<vo
         reasoning: approved
           ? decision.reasoning
           : `trade rejected by due diligence: ${verdict.reasons.map((reason) => reason.code).join(", ")}`,
-        inputs: { market, fairValueBps, decision, dueDiligence: verdict },
+        inputs: { market, fairValueBps, decision, sizing: sized?.sizing, dueDiligence: verdict },
       });
       const { cid } = await deps.traceStore.put(built.hash, built.json);
       ctx.log.info("TRADER_TRACE", { trace: built.hash, cid });
