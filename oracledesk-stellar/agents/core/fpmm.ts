@@ -1,6 +1,6 @@
-/**
+/*
  * TypeScript/BigInt mirror of contracts/market-core/src/math.rs and
- * model/fpmm_model.py. Kept in lockstep with both by hand; fpmm.test.ts
+ * model/fpm_model.py. Kept in lockstep with both by hand; fpmm.test.ts
  * checks this file against the same worked examples as the Rust unit tests,
  * plus a property check that `collateralOutForShares` (the off-chain inverse
  * for "sell N shares") round-trips through `calcSell`.
@@ -118,6 +118,11 @@ export function settleValue(kind: Settlement, yes: bigint, no: bigint): bigint {
   if (kind === "yes") return yes;
   if (kind === "no") return no;
   return (yes + no) / 2n;
+}
+
+export function mergeMax(yes: bigint, no: bigint): bigint {
+  if (yes < 0n || no < 0n) throw new MathError("invalid input");
+  return yes < no ? yes : no;
 }
 
 /**
@@ -281,10 +286,10 @@ export function collateralForShares(rBought: bigint, rOther: bigint, sharesTarge
 }
 
 /**
- * YES price in bps of the pool **after** applying an outcome-relative
+ * YES price in bps of the pool **After** applying an outcome-relative
  * reserve update (the `newReserve*` pair of a BuyQuote/SellQuote). Mirrors
  * math.rs::price_after: pass `outcomeIsYes = false` for a NO trade, where
- * `rAfter` is the NO reserve.
+ * `After` is the NO reserve.
  */
 export function priceAfter(outcomeIsYes: boolean, rAfter: bigint, rOtherAfter: bigint): bigint {
   return outcomeIsYes ? priceYesBps(rAfter, rOtherAfter) : priceYesBps(rOtherAfter, rAfter);
@@ -312,7 +317,7 @@ export function priceAfterSell(takenIsYes: boolean, quote: SellQuote): bigint {
  * (fees included) is at most `limitBps` per share. Compared by
  * cross-multiplication so rounding cannot flip the decision; exact
  * equality passes. Mirrors math.rs::buyWithinLimit / the on-chain
- * `buy_v2` limit check.
+ * `buy_v2` imit check.
  */
 export function buyWithinLimit(collateralIn: bigint, sharesOut: bigint, limitBps: bigint): boolean {
   if (collateralIn < 0n || sharesOut <= 0n) throw new MathError("invalid input");
