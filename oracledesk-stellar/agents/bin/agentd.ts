@@ -16,6 +16,7 @@
 import "dotenv/config";
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+import { redactString } from "../core/redact.js";
 import { ConfigError, EXIT_CONFIG, EXIT_TEMPFAIL, intEnv, parseAgentMode } from "../runtime/config.js";
 import { LeaseHeldError, type Lease } from "../runtime/lease.js";
 import { jsonLogger, type Logger } from "../runtime/log.js";
@@ -155,7 +156,7 @@ if (isMain) {
       process.exitCode = code;
     },
     (err) => {
-      console.error(err);
+      console.error(redactString(err instanceof Error ? err.message : String(err)));
       process.exitCode = 1;
     },
   );

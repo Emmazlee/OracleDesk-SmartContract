@@ -28,6 +28,8 @@ yarn-error.log*
 .events/
 # Arbitrage execution journal (ARB_JOURNAL_FILE, #108)
 .arb/
+.risk/
+.journal/
 
 # Stellar / Soroban CLI local state (funded testnet identities, RPC caches)
 .soroban/

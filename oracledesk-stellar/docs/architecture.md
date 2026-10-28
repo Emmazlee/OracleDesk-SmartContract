@@ -31,6 +31,69 @@ The widening helpers live in a `no_std` `wide` module inside `math.rs` with
 no `soroban_sdk` imports, so the arithmetic stays natively testable and the
 Python/TypeScript mirrors can reproduce it bit-for-bit.
 
+**Split and merge (complete-set primitives).** Two pool-free entrypoints
+convert between collateral and complete sets, modelled on Gnosis's
+Conditional Tokens `splitPosition` / `mergePositions`:
+
+- `split(holder, market_id, amount)` pulls `amount` collateral from `holder`
+  and credits `amount` YES **and** `amount` NO to `holder`'s `Position`.
+  Requires `MarketStatus::Open` and `now < close_time` (reuses
+  `assert_tradable`) plus `assert_not_paused`; after close, splitting has no
+  purpose and would open timing games.
+- `merge(holder, market_id, amount)` debits `amount` YES and `amount` NO
+  (rejecting with `InsufficientShares` if either leg is short) and pays
+  `amount` collateral back to `holder`. Requires `MarketStatus::Open` but is
+  **allowed after `close_time` and while paused**: merging is a pure exit
+  that cannot harm the pool, and letting holders de-risk while the resolver
+  is slow is valuable. This asymmetry with `split` is deliberate.
+
+Neither touches `reserve_yes`, `reserve_no` or `fees_accrued`, and neither
+charges a fee. Both emit `SetsSplit` / `SetsMerged` (`market_id`, `holder`
+as topics, `amount` as data) so indexers can track positions. `split`
+performs its state writes before the token transfer, matching `buy`.
+`math::merge_max(yes, no) = min(yes, no)` (mirrored in the Python model and
+the TS agent core) backs the `quote_merge_max(market_id, holder)` view for
+frontends offering "merge all".
+
+The TS mirror lives in `agents/core/fpmm.ts` as `mergeMax(yes, no)` and must
+stay syntactically valid and in lockstep with `math::merge_max`; the agents
+test suite exercises known values against the Rust and Python implementations.
+
+**Invariant proof for split/merge.** Let `S = sets_minted`,
+`R_y, R_n` be the reserves and `Σpos.yes, Σpos.no` the summed holder legs.
+
+- *Split* adds `amount` to `S`, to `Σpos.yes` and to `Σpos.no`, so
+  `R_y + Σpos.yes == S` (and the NO twin) is preserved. The collateral
+  balance grows by exactly `amount`, so `balance == S + fees_accrued +
+  lp_fees` holds.
+- *Merge* subtracts `amount` from `S` and from both sums, and pays out
+  `amount` collateral; the same two equalities are preserved.
+- *Settlement.* Resolved(Yes) pays `R_y + Σpos.yes = S`. Void pays
+  `Σ floor((y_i + n_i)/2) + floor((R_y + R_n)/2) <= (Σ(y_i + n_i) + R_y +
+  R_n)/2 = S`. Split can increase the number of holders each losing up to
+  0.5 unit to flooring, but the total is bounded by `S` — the
+  `void_total_payout_never_exceeds_sets_with_split` test asserts this.
+
+**MAX_SETS griefing (split).** `split` is bounded by `math::MAX_SETS`
+(`MarketTooLarge` above it), the same cap `buy` enforces. An attacker can
+therefore split up to `MAX_SETS` and block further `buy` calls at the cost
+of locking that much capital, then merge out risk-free. Decision: keep the
+shared cap rather than add a separate per-market split cap or exclude split
+sets from the `buy` limit. A separate cap would let `sets_minted` exceed
+`MAX_SETS` (breaking the settlement bound above), and excluding split sets
+from the `buy` limit would let `sets_minted` grow unbounded. The griefing
+cost is locking the full `MAX_SETS` of collateral, which is expensive and
+recoverable only by the attacker's own merge; the alternative designs are
+worse. This is documented as a known limitation.
+
+**Pause semantics for merge.** Because `merge` works while paused, a paused
+contract can still pay out collateral. This is intentional (a pure exit
+cannot harm the pool) and is recorded in `SECURITY.md`.
+
+**`sell` accounting.** `sell` now uses `checked_sub` for `sets_minted`
+(previously an unchecked `-=`), so a bug can never drive `S` negative and
+break the settlement bound.
+
 **Solvency invariant** (holds after every state transition — see the test
 suite for the ones exercised): the contract's own SEP-41 token balance for a
 market equals `sets_minted + fees_accrued + lp_fees` (`fees_accrued` is the
@@ -127,8 +190,12 @@ with bounds) → `resolve` or `void_market` (resolver-only) → `redeem` per
 holder, `claim_pool_remainder` for the creator/LP, `sweep_fees`
 (permissionless) to the snapshotted fee recipient. Positions and LP
 ownership can change hands at any point via `transfer_position` /
-`transfer_lp`. `finalize_market` (permissionless, after the redemption
-deadline) closes the market and sweeps the residual.
+`transfer_lp`. While open, `split`/`merge` convert between collateral and
+complete sets without touching the pool (`split` before `close_time`,
+`merge` any time before resolution, including while paused). After
+finality, `redeem` handles both legs; `merge` is not used post-resolution.
+`finalize_market` (permissionless, after the redemption deadline) closes the
+market and sweeps the residual.
 
 A per-market `SettleState` side entry (views `settle_state` and
 `redeem_deadline`) tracks user-held outstanding shares, the finality
@@ -182,9 +249,39 @@ Independent resolution modes, all ultimately calling
 `market_core.resolve(market_id, outcome)`:
 
 - **PriceThreshold**: reads a [Reflector](https://reflector.network) SEP-40
-  price feed at (or after) the market's `close_time`, compares to a
-  threshold, enforces a max staleness window. Anyone may first pin that
-  read with `snapshot_price` (see "Oracle history retention" below).
+  price feed at a timestamp aligned to the feed's `resolution()` grid at or
+  *before* the market's `close_time` (`close_time - close_time % resolution`),
+  walking back along the grid — at most `MAX_LOOKBACK_RECORDS` (12) records,
+  and never past `max_staleness` — until it finds a published record. A feed
+  with `resolution() == 0` or a non-positive published price is `InvalidPrice`;
+  a grid the feed simply has no record on (or one the bounded walkback
+  exhausts) is `StalePrice`, so operators should resolve before the window
+  closes and guardians may void via the `OracleUnavailable` path after grace.
+  The legacy `Price` spec compares the threshold in feed-native units (raw
+  integer, no scaling); the decimal-explicit scaled spec
+  (`ScaledPriceConfig`) carries
+  `threshold_decimals` and rescales both sides to the coarser of
+  `decimals()` and `threshold_decimals` before comparing — see ADR 0001,
+  "Price threshold units". `preview_price(market_id)` reads the feed's newest
+  record (`lastprice`) read-only, without resolving or storing anything.
+  Anyone may first pin the grid read with `snapshot_price` (legacy and hybrid
+  specs only; scaled markets reply `WrongMode` — see "Oracle history retention"
+  below).
+- **PriceTwap**: the time-weighted-average price threshold (issue #27,
+  `TwapConfig` + `register_twap_spec`/`resolve_twap`). Samples
+  `price(asset, ts)` at every `resolution()`-aligned timestamp in
+  `(close_time - window, close_time]` — at most `MAX_TWAP_SAMPLES` (32)
+  reads — skips missing records, and rejects fewer than `min_samples`
+  samples or any gap above `max_gap` (start→first, consecutive, and
+  last→close) with `StalePrice`. The average is an integer-only, checked
+  `i128` sum weighted by time-to-next-sample (the last sample's weight runs
+  through `close_time` inclusive), floored before the threshold comparison,
+  and emitted as `TwapResolution` alongside the unchanged
+  `PriceResolution`/`V2` pair. It commits through its own domain-tagged
+  preimage (ADR 0001, "TWAP resolution variant") and is `WrongMode` for
+  `snapshot_price`/`preview_price`, which pin single prints. A market uses
+  at most one price shape: `assert_unconfigured` covers
+  `Price`/`PriceScaled`/`PriceTwap` together.
 - **Attested**: m-of-n signer votes on a resolver-local
   `AttestedOutcome { Yes, No, Invalid }`; once `threshold` signers agree, a
   dispute window opens; anyone can finalize after it elapses, or a guardian
@@ -254,8 +351,10 @@ voided.
 
 `snapshot_price(market_id, caller)` closes that gap. Anyone may call it
 after `close_time` while the market is unresolved; it reads the committed
-feed exactly as resolution does, validates it with the same rule
-(`validate_price`: not after close, no older than `max_staleness`), and
+feed exactly as resolution does (on the `resolution()` grid, at or before
+`close_time`), validates it with the same rule
+(`validate_price`: not after close, price strictly positive, no older than
+`max_staleness`), and
 stores it as a `PriceSnapshot`. An invalid read is never stored, and the
 first valid snapshot wins (`SnapshotExists`): the answer for a fixed
 `(asset, close_time)` is deterministic, so this deliberately prefers
@@ -361,6 +460,11 @@ directly would just be trading its own separate funds, not bypassing a cap
 on the treasury's money. The `*_v2` twins forward the same caps plus
 market-core's deadline / limit-price bounds, so a revert from either layer
 leaves the caps unchanged (the whole invocation is atomic).
+
+Treasury `agent_split` / `agent_merge` forwarders are **not** implemented
+yet (a non-goal of the split/merge change); agents that need the primitives
+call `market-core` directly today. They can be added later as thin wrappers
+that reuse the existing caps.
 
 **Agents.** The treasury keeps a registry of up to `MAX_AGENTS = 16` agents,
 each with an `AgentPolicy { roles, max_trade, max_daily, active }`. Roles are
@@ -891,6 +995,23 @@ no admin.
   `min_shares_out` / `limit_price_bps` bounds plus a deadline from it.
 - **packages/bindings/**: generated TypeScript clients (`scripts/gen-bindings.sh`).
 
+### Trader sizing
+
+The trader's optional sized path computes an impact limit by binary-searching
+the integer `calcBuy` curve, so it respects the contract's fee and
+pool-favoring rounding rather than a floating-point reserve approximation.
+It shrinks the fair-value probability by `FAIR_UNCERTAINTY_BPS`, maximizes
+expected binary-settlement log wealth with existing YES/NO holdings, and
+applies the rational `KELLY_FRACTION` (default 0.25). The result is further
+bounded by `TRADE_SIZE_STROOPS`, treasury market/daily/capital headroom and
+the market's `MAX_SETS` capacity. A report containing the inputs, intermediate
+limits and binding constraint is included in the reasoning trace. `SLIPPAGE_BPS`
+sets the minimum share output from the exact integer quote, while the trader
+also re-quotes immediately before submission and applies a deadline.
+
+The limit protects the estimated post-trade marginal price from crossing
+`effective fair value - SIZING_BUFFER_BPS`; it cannot guarantee a fill if
+another transaction changes the pool between the snapshot and execution.
 **Trade bounds and circuit breakers.** Two layers of protection beyond the
 share-count slippage parameters:
 
@@ -1073,6 +1194,10 @@ compatibility must be declared and is checked against the chain.
   deployments (this repo's or a fork's) from trading against the same
   market-core markets; the treasury's caps bound one agent deployment's own
   risk, not systemic market behavior.
+- MAX_SETS griefing via `split`: an attacker can split up to `MAX_SETS` and
+  block further `buy` calls (`MarketTooLarge`) at the cost of locking that
+  much collateral, then merge out risk-free. See the split/merge section
+  above for why the shared cap is kept.
 
 ### x402 payment preparation, settlement and replay
 

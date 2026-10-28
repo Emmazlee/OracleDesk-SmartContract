@@ -97,6 +97,24 @@ function stroopsField(fallback: bigint, min = 1n) {
   });
 }
 
+function fractionField() {
+  return z.string().optional().transform((raw, ctx): { numerator: bigint; denominator: bigint } => {
+    if (raw === undefined) return { numerator: 1n, denominator: 4n };
+    if (!/^(?:0|1)(?:\.\d{1,6})?$/.test(raw)) {
+      ctx.addIssue({ code: "custom", message: `must be a decimal fraction greater than 0 and at most 1, got ${JSON.stringify(raw)}` });
+      return z.NEVER;
+    }
+    const [whole, fractional = ""] = raw.split(".");
+    const denominator = 10n ** BigInt(fractional.length);
+    const numerator = BigInt(whole) * denominator + BigInt(fractional || "0");
+    if (numerator <= 0n || numerator > denominator) {
+      ctx.addIssue({ code: "custom", message: `must be greater than 0 and at most 1, got ${JSON.stringify(raw)}` });
+      return z.NEVER;
+    }
+    return { numerator, denominator };
+  });
+}
+
 /** Secrets and contract ids may be left blank (the .env.example template ships
  * them empty); blank means unset. Anything else must be a valid StrKey. */
 const blankToUndefined = (v: unknown) => (v === "" ? undefined : v);
@@ -124,6 +142,10 @@ export const EnvSchema = z.object({
   MIN_EDGE_BPS: bpsField(500),
   CONFIDENCE_THRESHOLD_BPS: bpsField(1000),
   SLIPPAGE_BPS: bpsField(50),
+  KELLY_FRACTION: fractionField(),
+  SIZING_BUFFER_BPS: bpsField(25),
+  MIN_TRADE_STROOPS: stroopsField(1_000_000n, 1n),
+  FAIR_UNCERTAINTY_BPS: bpsField(500),
   FAIR_VALUE_BPS: bpsField(undefined),
   TRADE_SIZE_STROOPS: stroopsField(100_000_000n),
   DEFAULT_SEED_STROOPS: stroopsField(1_500_000_000n, MIN_SEED_STROOPS),
@@ -254,6 +276,10 @@ export interface TradingConfig {
   deadlineSecs: number;
   /** Fixed fair-value override; unset means each market's own price. */
   fairValueBps?: number;
+  kellyFraction: { numerator: bigint; denominator: bigint };
+  sizingBufferBps: number;
+  minTradeStroops: bigint;
+  fairUncertaintyBps: number;
 }
 
 /** Event-driven triggers (#105), used by `trader --follow`. */
@@ -350,6 +376,10 @@ function tunablesFrom(e: ParsedEnv, env: NodeJS.ProcessEnv): Tunables {
       slippageBps: e.SLIPPAGE_BPS!,
       deadlineSecs: e.DEADLINE_SECS!,
       fairValueBps: e.FAIR_VALUE_BPS,
+      kellyFraction: e.KELLY_FRACTION!,
+      sizingBufferBps: e.SIZING_BUFFER_BPS!,
+      minTradeStroops: e.MIN_TRADE_STROOPS,
+      fairUncertaintyBps: e.FAIR_UNCERTAINTY_BPS!,
     },
     maker: {
       confidenceThresholdBps: e.CONFIDENCE_THRESHOLD_BPS!,
@@ -538,7 +568,15 @@ export function describeConfig(cfg: AgentConfig): Record<string, unknown> {
     arb: strings(arb),
     events: { ...events, tradeThresholdStroops: events.tradeThresholdStroops.toString() },
     agentSecret: agentSecret ? { publicKey: Keypair.fromSecret(agentSecret).publicKey(), redacted: true } : null,
-    trading: { ...trading, tradeSizeStroops: trading.tradeSizeStroops.toString() },
+    trading: {
+      ...trading,
+      tradeSizeStroops: trading.tradeSizeStroops.toString(),
+      minTradeStroops: trading.minTradeStroops.toString(),
+      kellyFraction: {
+        numerator: trading.kellyFraction.numerator.toString(),
+        denominator: trading.kellyFraction.denominator.toString(),
+      },
+    },
     maker: { ...maker, defaultSeedStroops: maker.defaultSeedStroops.toString() },
   };
 }

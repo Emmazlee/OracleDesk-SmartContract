@@ -3,6 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import type { DueDiligenceVerdict } from "../core/due-diligence.js";
 import { LocalTraceStore } from "../core/trace.js";
 import { FakeEventsRpc, IDS, testDecoder, trade } from "../core/events/testing.js";
 import { followTask, type FollowAdapter } from "./follow.js";
@@ -12,6 +13,18 @@ import { MemoryStateStore } from "./state.js";
 import type { TraderCandidate } from "./tasks/trader.js";
 
 const NOW = 1_700_000_000;
+const approved = (marketId: bigint): DueDiligenceVerdict => ({
+  outcome: "allow",
+  reasons: [],
+  commitments: "verified",
+  metadata: "verified",
+  resolutionPath: "verified",
+  oracleTrust: "not_applicable",
+  signerTrust: "not_applicable",
+  marketId: marketId.toString(),
+  stateFingerprint: "fixture-state",
+  checkedAt: Date.now(),
+});
 
 function fakeAdapter(buys: bigint[], exposure: Record<string, bigint>): FollowAdapter {
   return {
@@ -56,6 +69,7 @@ async function setup(exposure: Record<string, bigint> = {}) {
       slippageBps: 50n,
       deadlineSecs: 60,
       nowSecs: () => NOW,
+      dueDiligence: async (marketId) => approved(marketId),
     },
     rpc,
     decoder: await testDecoder(),

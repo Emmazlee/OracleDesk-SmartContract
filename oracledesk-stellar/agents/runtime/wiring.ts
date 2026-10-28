@@ -9,11 +9,12 @@ import { dirname, join } from "node:path";
 import { Server } from "@stellar/stellar-sdk/rpc";
 import { SnapshotCache } from "../core/state/state_cache.js";
 import { ChainStateReader } from "../core/state/reader.js";
-import { availableCapital, existingQuestionHashes, tradableMarkets } from "../core/state/select.js";
+import { existingQuestionHashes, tradableMarkets } from "../core/state/select.js";
 import { toMarketState } from "../core/state/types.js";
 import type { MarketSignal, SignalSource } from "../core/strategy.js";
 import { LocalTraceStore } from "../core/trace.js";
 import type { AgentConfig, Tunables } from "../core/config.js";
+import type { CapsView, SizingParams } from "../core/sizing.js";
 import { StellarAdapter, type Deployments } from "../stellar/adapter.js";
 import { assertNever, intEnv, type AgentMode } from "./config.js";
 import { FileLease, NoLease, type Lease } from "./lease.js";
@@ -66,15 +67,43 @@ function stateReader(rpcUrl: string, deployments: Deployments) {
 }
 
 /** Chain-state market source: tradable markets the treasury can afford. */
-export function chainCandidates(t: Tunables, deployments: Deployments): () => Promise<TraderCandidate[]> {
+export function chainCandidates(
+  t: Tunables,
+  deployments: Deployments,
+  adapter: TraderDeps["adapter"],
+): () => Promise<TraderCandidate[]> {
   const reader = stateReader(t.rpcUrl, deployments);
   const cache = new SnapshotCache();
-  const tradeSize = t.trading.tradeSizeStroops;
   return async () => {
     const snapshot = await cache.get(() => reader.readSnapshot([]));
-    if (availableCapital(snapshot) < tradeSize) return [];
-    return tradableMarkets(snapshot).map((m) => {
+    const risk = await adapter.riskCaps?.();
+    const canSize = risk !== undefined && adapter.marketExposure !== undefined && adapter.treasuryPosition !== undefined;
+    const dailyHeadroom = risk?.dailyHeadroom ?? (risk ? risk.maxDaily - risk.dailyUsed : 0n);
+    if (canSize && (snapshot.portfolio.availableCapital <= 0n || dailyHeadroom <= 0n)) return [];
+    const markets = tradableMarkets(snapshot);
+    return Promise.all(markets.map(async (m) => {
       const market = toMarketState(m);
+      let holdings;
+      let caps: CapsView | undefined;
+      if (canSize && risk !== undefined) {
+        const [position, exposure] = await Promise.all([
+          adapter.treasuryPosition!(m.marketId),
+          adapter.marketExposure!(m.marketId),
+        ]);
+        holdings = position;
+        const available = snapshot.portfolio.availableCapital < dailyHeadroom
+          ? snapshot.portfolio.availableCapital
+          : dailyHeadroom;
+        caps = {
+          maxTrade: risk.maxTrade < t.trading.tradeSizeStroops ? risk.maxTrade : t.trading.tradeSizeStroops,
+          maxMarket: risk.maxMarket,
+          marketExposure: exposure,
+          maxDaily: risk.maxDaily,
+          dailyUsed: risk.dailyUsed,
+          dailyHeadroom,
+          availableCapital: available,
+        };
+      }
       return {
         market,
         // No external oracle yet: FAIR_VALUE_BPS or the market's own price (strategy.ts decides edge).
@@ -82,8 +111,11 @@ export function chainCandidates(t: Tunables, deployments: Deployments): () => Pr
         creator: m.creator,
         questionHash: m.questionHash,
         ledger: snapshot.ledgers.max,
+        holdings,
+        caps,
+        setsMinted: m.setsMinted,
       };
-    });
+    }));
   };
 }
 
@@ -109,17 +141,27 @@ export function traderDeps(
   adapter: TraderDeps["adapter"],
   deployments: Deployments | undefined,
   nowSecs: () => number,
+  dueDiligence?: TraderDeps["dueDiligence"],
 ): TraderDeps {
   return {
     adapter,
     traceStore: new LocalTraceStore(t.traceStoreDir),
-    candidates: deployments ? chainCandidates(t, deployments) : () => fixtureCandidates(nowSecs()),
+    candidates: deployments ? chainCandidates(t, deployments, adapter) : () => fixtureCandidates(nowSecs()),
     treasury: deployments?.contracts.treasury,
     minEdgeBps: t.trading.minEdgeBps,
     tradeSizeStroops: t.trading.tradeSizeStroops,
     slippageBps: BigInt(t.trading.slippageBps),
+    sizingParams: {
+      kellyFractionNumerator: t.trading.kellyFraction.numerator,
+      kellyFractionDenominator: t.trading.kellyFraction.denominator,
+      bufferBps: BigInt(t.trading.sizingBufferBps),
+      slippageBps: BigInt(t.trading.slippageBps),
+      minTradeStroops: t.trading.minTradeStroops,
+    } satisfies SizingParams,
+    uncertaintyBps: BigInt(t.trading.fairUncertaintyBps),
     deadlineSecs: t.trading.deadlineSecs,
     nowSecs,
+    dueDiligence,
   };
 }
 
@@ -155,4 +197,3 @@ export function runtimeOptions(env: NodeJS.ProcessEnv): Omit<RuntimeOptions, "ta
     backoffMaxMs: intEnv(env, "BACKOFF_MAX_MS", 5 * 60_000, 1),
   };
 }
-

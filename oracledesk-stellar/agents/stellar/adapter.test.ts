@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { Keypair } from "@stellar/stellar-sdk";
+import { KeypairSigner } from "@stellar/stellar-sdk/contract";
 import {
   agentCredentials,
   loadDeployments,
@@ -43,7 +44,33 @@ test("live mode without an agent secret throws immediately", () => {
       rpcUrl: "https://soroban-testnet.stellar.org",
       deployments,
     });
-  }, /agentSecret/);
+  }, /signer or agentSecret/);
+});
+
+test("live mode accepts a policy-backed signer with the configured agent identity", () => {
+  const keypair = Keypair.random();
+  const signer = new KeypairSigner(keypair, "Test SDF Network ; September 2015");
+  const adapter = new StellarAdapter({
+    mode: "live",
+    signer,
+    agentAddress: keypair.publicKey(),
+    networkPassphrase: "Test SDF Network ; September 2015",
+    rpcUrl: "https://soroban-testnet.stellar.org",
+    deployments,
+  });
+  assert.equal(adapter.agent, keypair.publicKey());
+});
+
+test("live mode rejects an injected signer that does not match the configured agent", () => {
+  const keypair = Keypair.random();
+  assert.throws(() => new StellarAdapter({
+    mode: "live",
+    signer: new KeypairSigner(keypair, "Test SDF Network ; September 2015"),
+    agentAddress: Keypair.random().publicKey(),
+    networkPassphrase: "Test SDF Network ; September 2015",
+    rpcUrl: "https://soroban-testnet.stellar.org",
+    deployments,
+  }), /does not match/);
 });
 
 test("adapter rejects unknown mode", () => {
@@ -97,7 +124,7 @@ test("dry-run refuses to be handed an agent secret", () => {
         rpcUrl: "https://soroban-testnet.stellar.org",
         deployments,
       } as unknown as StellarAdapterOptions),
-    /dry-run mode must not be given agentSecret/,
+    /dry-run mode must not be given a signer or agentSecret/,
   );
 });
 
